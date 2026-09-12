@@ -1,0 +1,111 @@
+<mxfile host="65bd71144e">
+    <diagram id="PQr6fv6-5bD2H18npVGT" name="Page-1">
+        <mxGraphModel dx="1299" dy="907" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="2" value="Navbar" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;" vertex="1" parent="1">
+                    <mxGeometry x="10" y="70" width="150" height="410" as="geometry"/>
+                </mxCell>
+                <mxCell id="5" style="edgeStyle=orthogonalEdgeStyle;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=0;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="3" target="4">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="7" style="edgeStyle=orthogonalEdgeStyle;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=0;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="3" target="6">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="3" value="GroupVersion&lt;div&gt;(collapsible)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="25" y="120" width="115" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="Kind" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="40" y="170" width="100" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="Kind" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="40" y="200" width="100" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="8" style="edgeStyle=orthogonalEdgeStyle;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=0;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="10" target="11">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="9" style="edgeStyle=orthogonalEdgeStyle;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=0;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="10" target="12">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="10" value="GroupVersion&lt;div&gt;(collapsible)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="25" y="240" width="115" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="11" value="Kind" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="40" y="290" width="100" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="12" value="Kind" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="40" y="320" width="100" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="13" value="Filters" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;" vertex="1" parent="1">
+                    <mxGeometry x="160" y="70" width="340" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="14" value="&amp;lt;InputField&amp;gt;&lt;div&gt;Name&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="170" y="100" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="15" value="&amp;lt;InputField&amp;gt;&lt;div&gt;Namespace&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="280" y="100" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="16" value="&amp;lt;InputField&amp;gt;&lt;div&gt;Json-Path&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="390" y="100" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="17" value="&amp;lt;&amp;lt;Table&amp;gt;&amp;gt;&lt;br&gt;Kind-View" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;" vertex="1" parent="1">
+                    <mxGeometry x="160" y="160" width="340" height="320" as="geometry"/>
+                </mxCell>
+                <mxCell id="18" value="Status (via Condition) | Name | Namespace | CreatedAt | Actions" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" vertex="1" parent="1">
+                    <mxGeometry x="170" y="210" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="43" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="20" target="45">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="530" y="230" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="20" value="..." style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="170" y="230" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="21" value="..." style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="170" y="250" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="22" value="..." style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="170" y="270" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="45" value="onClick open Modal which then displays the Resource in YAML editor (monaco)" style="shape=callout;whiteSpace=wrap;html=1;perimeter=calloutPerimeter;" vertex="1" parent="1">
+                    <mxGeometry x="540" y="230" width="140" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="46" style="edgeStyle=orthogonalEdgeStyle;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0;entryDx=0;entryDy=40;entryPerimeter=0;" edge="1" parent="1" source="18" target="47">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="550" y="295" as="targetPoint"/>
+                        <mxPoint x="500" y="250" as="sourcePoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="47" value="Actions are Delete | Trigger" style="shape=callout;whiteSpace=wrap;html=1;perimeter=calloutPerimeter;" vertex="1" parent="1">
+                    <mxGeometry x="540" y="110" width="140" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="49" style="edgeStyle=orthogonalEdgeStyle;html=1;exitX=0;exitY=0;exitDx=140;exitDy=40;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="45" target="50">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="710" y="270.0000000000001" as="targetPoint"/>
+                        <mxPoint x="500" y="250" as="sourcePoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="50" value="&amp;lt;&amp;lt;Modal&amp;gt;&amp;gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;" vertex="1" parent="1">
+                    <mxGeometry x="730" y="110" width="340" height="320" as="geometry"/>
+                </mxCell>
+                <mxCell id="51" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="740" y="140" width="320" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="52" value="Create" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="750" y="145" width="90" height="25" as="geometry"/>
+                </mxCell>
+                <mxCell id="53" value="Update" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="855" y="145" width="90" height="25" as="geometry"/>
+                </mxCell>
+                <mxCell id="54" value="Monaco YAML Editor" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="740" y="190" width="320" height="225" as="geometry"/>
+                </mxCell>
+                <mxCell id="55" value="Delete" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="960" y="145" width="90" height="25" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
