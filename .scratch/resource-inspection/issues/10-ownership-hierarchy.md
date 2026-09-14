@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Discover the configured resource scope; 04 — Keep tenant views live and authorized; 09 — Handle observation loss and recovery.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -21,3 +21,10 @@
 ## Implementation context
 
 Use ADRs 0002, 0004, and 0012. Configuration establishes permitted type edges; future automatic hierarchy discovery and label/spec/status resolver implementations are outside this ticket.
+
+## Answer
+
+Implemented restart-required configured owner-reference relationships through a
+tenant-scoped, freshness-gated immediate-neighborhood HTTP/SSE API and an
+expandable Ownership detail tab. Core API types use the empty Kubernetes group
+in configuration and `_core` only as an HTTP path segment. See ADR 0030.

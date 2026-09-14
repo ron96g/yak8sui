@@ -2,6 +2,14 @@
 - read the readme
 - always document decision as ADRs under docs/decisions
 
+## Implementation completion
+
+After implementing or changing application code, run `golangci-lint run ./...`
+from the repository root using the checked-in configuration. Fix reported issues
+and require a successful run before marking the work complete. If execution is
+blocked, record the blocker and leave verification incomplete. Run this alongside
+the tests, typechecks, and browser checks appropriate to the change.
+
 ## Agent skills
 
 ### Issue tracker

@@ -1,0 +1,47 @@
+server:
+  address: ":8080"
+  publicURL: "https://yak8sui.example.com"
+  webDirectory: "frontend/dist"
+  sessionTTL: "8h"
+identity:
+  issuerURL: "https://identity.example.com"
+  clientID: "yak8sui"
+  clientSecret: "replace-from-a-secret"
+  redirectURL: "https://yak8sui.example.com/auth/callback"
+  groupsClaim: "groups"
+observation:
+  databasePath: "resources.db"
+  # Omit kubeconfig for in-cluster service-account credentials.
+  kubeconfig: ""
+  groups:
+    - group: "example.com"
+      # Empty include discovers all resources in this group; exclusions win.
+      include: ["widgets", "clusterpolicies"]
+      exclude: ["internalwidgets"]
+      types:
+        - resource: "widgets"
+          # Omit version to use the API group's preferred served version.
+          labelSelector: "yak8sui.io/inspect=true"
+        - resource: "clusterpolicies"
+          version: "v1beta1"
+    # Empty group is Kubernetes core; relationship types remain explicitly selected.
+    - group: ""
+      include: ["configmaps"]
+      types:
+        - resource: "configmaps"
+          version: "v1"
+          labelSelector: "yak8sui.io/inspect=true"
+  relationships:
+    - parent: { group: "", kind: "ConfigMap" }
+      child: { group: "example.com", kind: "Widget" }
+      # ownerReferences is the default and currently the only supported resolver.
+      resolver: ownerReferences
+tenants:
+  - id: platform
+    name: Platform
+    groups: ["yak8sui-platform-admins"]
+    labelSelector: "yak8sui.io/tenant=platform"
+  - id: payments
+    name: Payments
+    groups: ["yak8sui-payments-viewers", "yak8sui-platform-admins"]
+    labelSelector: "yak8sui.io/tenant=payments"

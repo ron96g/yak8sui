@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yak8sui
+spec:
+  replicas: 1
+  # SQLite and in-memory sessions currently require a single writer/process.
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      serviceAccountName: yak8sui
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: yak8sui
+          image: ghcr.io/ron96g/yak8sui:main
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
+          # Listener probes are independent of per-type observation availability.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+          volumeMounts:
+            - name: configuration
+              mountPath: /etc/yak8sui
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/yak8sui
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: configuration
+          secret:
+            secretName: yak8sui-config
+            defaultMode: 0440
+        - name: data
+          persistentVolumeClaim:
+            claimName: yak8sui-data
+        - name: temporary
+          emptyDir: {}

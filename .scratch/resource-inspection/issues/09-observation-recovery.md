@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Keep tenant views live and authorized.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -19,3 +19,18 @@
 ## Implementation context
 
 Use ADRs 0007, 0010, and 0012. Observation availability is also consumed by later hierarchy branches. PostgreSQL is not a prerequisite: implement against the shared persistence contract and existing SQLite slice first if necessary.
+
+## Comments
+
+Implemented for SQLite in ADR 0029. Observation is tracked per configured type;
+new reads are gated unless current, open streams receive an authorized status
+event and close, and recovery creates a fresh informer and atomically replaces
+the complete type projection after its initial list. Bounded retries perform
+targeted configured-type rediscovery while preserving the selected version.
+Public HTTP/SSE and browser coverage exercise stale membership replacement and
+partial-type continuity. Ticket 08 PostgreSQL remains explicitly deferred.
+
+**Answer:** Ticket 09 is complete for the current SQLite adapter. See
+`docs/decisions/0029-relist-to-recover-observation-freshness.md` for the freshness
+boundary, atomic recovery, SSE status, retry, rediscovery, and version-pinning
+decisions.

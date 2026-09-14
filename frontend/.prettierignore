@@ -1,0 +1,9 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+blob-report/
+*.tsbuildinfo
+package-lock.json
+design.drawio
+stitch_cosmic_admin_ui_theme/

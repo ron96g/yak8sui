@@ -1,0 +1,24 @@
+server:
+  address: ":8080"
+  publicURL: "https://yak8sui.example.com"
+  webDirectory: "/app/frontend"
+  sessionTTL: "8h"
+  cookieSecure: true
+identity:
+  issuerURL: "https://identity.example.com"
+  clientID: "yak8sui"
+  clientSecret: "replace-in-local-secret-file"
+  redirectURL: "https://yak8sui.example.com/auth/callback"
+  groupsClaim: "groups"
+observation:
+  databasePath: "/var/lib/yak8sui/resources.db"
+  # No kubeconfig: use the pod's ServiceAccount.
+  groups:
+    - group: cert-manager.io
+      include: [certificates, certificaterequests, issuers, clusterissuers]
+  relationships: []
+tenants:
+  - id: platform
+    name: Platform
+    groups: [yak8sui-platform-admins]
+    labelSelector: "yak8sui.io/tenant=platform"
