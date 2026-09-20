@@ -1,0 +1,11 @@
+# Share loaded ownership state across graph and table presentations
+
+Treat the ownership graph and ownership table as two presentations of one loaded ownership hierarchy. Move neighborhood snapshots, directional expansion, cycle protection, completeness, and per-node SSE lifecycles behind a shared hierarchy-state interface so changing presentation neither loses expansion nor creates duplicate subscriptions.
+
+The table represents only the authorized neighborhoods the user has loaded; it does not silently expand the entire configured hierarchy. Preserve each loaded ownership path rather than globally deduplicating nodes because existing owner-reference relationships may have multiple parents or converge on the same resource. Custom resolvers impose a stricter one-parent invariant, but the presentation must remain correct for the broader graph model.
+
+Keep graph directionality and table ancestry explicit. Owners remain above and owned resources below in the graph. Table rows expose depth, direction, parent, resource identity, controller ownership, health, and branch completeness. Both presentations retain lazy expansion, path-based cycle stops, unavailable/configuration-limited notices, and tenant-scoped live replacement snapshots.
+
+The frontend hierarchy-state interface exposes a root path occurrence, a flattened row list, path-keyed expansion commands, and global expand/collapse commands. It owns replacement snapshots, branch problems, and exactly one `EventSource` per expanded node identity; path occurrences remain separate even when they share that node and stream. Tenant, center identity, or hierarchy revision replaces the state owner, while presentation changes do not. Expansion follows the occurrence's direction, and cycle detection compares node identity only against that occurrence's ancestry.
+
+The presentation switch is an exclusive, labelled Graph/Table toggle with Graph selected initially. The graph retains its existing resource groups and explicit accessible “owner owns child” connectors. The table is labelled “Loaded ownership hierarchy”; each row states direction and depth, predecessor and complete ownership phrase, type/UID-backed identity, resource facts, controller marker, branch state, and actions. Its wide semantic table scrolls inside the ownership view on narrow screens rather than widening the document.

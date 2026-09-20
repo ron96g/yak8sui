@@ -124,7 +124,7 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
   await page.screenshot({ path: testInfo.outputPath('yaml-modal.png') })
 
   await page.keyboard.press('Escape')
-  await page.setViewportSize({ width: 360, height: 800 })
+  await page.setViewportSize({ width: 320, height: 800 })
   await expect(
     page.getByRole('navigation', { name: 'Resource types' }),
   ).toBeVisible()
@@ -137,13 +137,27 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
       exact: true,
     }),
   ).toBeVisible()
+  await page.getByRole('button', { name: 'Table', exact: true }).click()
+  const narrowTable = page.getByRole('table', {
+    name: 'Loaded ownership hierarchy',
+  })
+  await expect(narrowTable).toBeVisible()
+  const tableViewport = narrowTable.locator('..')
+  expect(
+    await tableViewport.evaluate(
+      (element) => element.scrollWidth > element.clientWidth,
+    ),
+  ).toBeTruthy()
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(320)
   await page
     .getByRole('dialog')
     .screenshot({ path: testInfo.outputPath('ownership-narrow.png') })
   await page.keyboard.press('Escape')
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth),
-  ).toBeLessThanOrEqual(360)
+  ).toBeLessThanOrEqual(320)
   await page.screenshot({
     path: testInfo.outputPath('workspace-narrow.png'),
     fullPage: true,

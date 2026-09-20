@@ -1,40 +1,35 @@
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import {
   Alert,
   Box,
   Button,
-  IconButton,
-  Tooltip,
   CircularProgress,
+  IconButton,
   Paper,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  ToggleButton,
+  ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from '@mui/material'
-import { useEffect, useState } from 'react'
-import type { ResourceType, ResourceSummary } from './ResourceWorkspace'
+import { useState } from 'react'
 import { technicalText } from './theme'
+import {
+  type Completeness,
+  type HierarchyOccurrence,
+  type RelationshipNode,
+  nodeIdentity,
+  useOwnershipHierarchy,
+} from './useOwnershipHierarchy'
 
-export type RelationshipNode = ResourceSummary & {
-  type: ResourceType
-  controller?: boolean
-}
-type Completeness = {
-  complete: boolean
-  configurationLimited: boolean
-  unavailableScopes?: {
-    group: string
-    kind: string
-    observation: { state: string; reason?: string }
-  }[]
-}
-type Neighborhood = {
-  center: RelationshipNode
-  parents: RelationshipNode[]
-  children: RelationshipNode[]
-  upward: Completeness
-  downward: Completeness
-}
+export type { RelationshipNode } from './useOwnershipHierarchy'
 
 type Props = {
   tenantID: string
@@ -44,264 +39,272 @@ type Props = {
 }
 
 export default function OwnershipView(props: Props) {
-  const [expansion, setExpansion] = useState({ all: false, generation: 0 })
+  const contextKey = `${props.tenantID}/${nodeIdentity(props.center)}/${props.revision}`
+  return <OwnershipPresentation key={contextKey} {...props} />
+}
+
+function OwnershipPresentation(props: Props) {
+  const [presentation, setPresentation] = useState<'graph' | 'table'>('graph')
+  const hierarchy = useOwnershipHierarchy(
+    props.tenantID,
+    props.center,
+    props.revision,
+  )
   return (
-    <Stack spacing={2}>
+    <Stack spacing={2} minWidth={0}>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={presentation}
+          onChange={(_, value: 'graph' | 'table' | null) => {
+            if (value) setPresentation(value)
+          }}
+          aria-label="Ownership presentation"
+        >
+          <ToggleButton value="graph">Graph</ToggleButton>
+          <ToggleButton value="table">Table</ToggleButton>
+        </ToggleButtonGroup>
         <Button
           size="small"
           variant="outlined"
-          onClick={() =>
-            setExpansion((current) => ({
-              all: true,
-              generation: current.generation + 1,
-            }))
-          }
+          onClick={hierarchy.expandEntireHierarchy}
         >
           Expand entire hierarchy
         </Button>
-        <Button
-          size="small"
-          onClick={() =>
-            setExpansion((current) => ({
-              all: false,
-              generation: current.generation + 1,
-            }))
-          }
-        >
+        <Button size="small" onClick={hierarchy.collapseBranches}>
           Collapse branches
         </Button>
       </Stack>
-      <NeighborhoodView
-        key={`${props.tenantID}/${nodeIdentity(props.center)}/${expansion.generation}`}
-        {...props}
-        expandAll={expansion.all}
-        ancestry={new Set()}
-        root
-        direction="center"
-      />
+      {presentation === 'graph' ? (
+        <GraphOccurrence
+          occurrence={hierarchy.root}
+          onInspect={props.onInspect}
+          onToggle={hierarchy.toggle}
+          root
+        />
+      ) : (
+        <OwnershipTable
+          rows={hierarchy.rows}
+          onInspect={props.onInspect}
+          onToggle={hierarchy.toggle}
+        />
+      )}
     </Stack>
   )
 }
 
-function NeighborhoodView({
-  tenantID,
-  center,
-  revision,
+function GraphOccurrence({
+  occurrence,
   onInspect,
-  ancestry,
+  onToggle,
   root = false,
-  direction,
-  expandAll,
-}: Props & {
-  expandAll: boolean
-  ancestry: Set<string>
+}: {
+  occurrence: HierarchyOccurrence
+  onInspect: Props['onInspect']
+  onToggle: (key: string) => void
   root?: boolean
-  direction: 'center' | 'parent' | 'child'
 }) {
-  const [expanded, setExpanded] = useState(root || expandAll)
-  const [neighborhood, setNeighborhood] = useState<Neighborhood | null>(null)
-  const [problem, setProblem] = useState<string | null>(null)
-  const identity = nodeIdentity(center)
-  const cycle = ancestry.has(identity)
-  useEffect(() => {
-    if (!expanded || cycle) return
-    let active = true
-    setNeighborhood(null)
-    setProblem(null)
-    const source = new EventSource(relationshipStreamPath(tenantID, center))
-    source.addEventListener('snapshot', (event) => {
-      if (!active) return
-      try {
-        setNeighborhood(JSON.parse((event as MessageEvent<string>).data))
-        setProblem(null)
-      } catch {
-        setProblem('Ownership data could not be read.')
-        source.close()
-      }
-    })
-    source.addEventListener('observation', () => {
-      if (!active) return
-      setProblem('This ownership branch is not current.')
-      source.close()
-    })
-    source.addEventListener('revoked', () => {
-      if (!active) return
-      setNeighborhood(null)
-      setProblem('This resource is no longer visible in the active tenant.')
-      source.close()
-    })
-    source.onerror = () => {
-      if (active) setProblem('Ownership updates are reconnecting…')
-    }
-    return () => {
-      active = false
-      source.close()
-    }
-  }, [tenantID, identity, revision, expanded, cycle])
-
-  const nextAncestry = new Set(ancestry).add(identity)
-  const parents = neighborhood?.parents ?? []
-  const children = neighborhood?.children ?? []
+  const { node, neighborhood, direction } = occurrence
+  const parents = occurrence.children.filter(
+    (child) => child.direction === 'parent',
+  )
+  const children = occurrence.children.filter(
+    (child) => child.direction === 'child',
+  )
   return (
     <Stack spacing={0.5} alignItems="center" width="100%" minWidth={0}>
-      {expanded && neighborhood && direction !== 'child' && (
+      {occurrence.expanded && neighborhood && direction !== 'child' && (
         <CompletenessNotice
-          label={`Owners of ${center.name}`}
+          label={`Owners of ${node.name}`}
           value={neighborhood.upward}
-          empty={parents.length === 0}
+          empty={!neighborhood.parents.length}
         />
       )}
-      {expanded && neighborhood && direction !== 'child' && (
-        <RelationshipList
-          anchor={center}
-          expandAll={expandAll}
+      {parents.length > 0 && (
+        <GraphList
           nodes={parents}
-          direction="parent"
-          tenantID={tenantID}
-          revision={revision}
-          ancestry={nextAncestry}
+          anchor={node}
           onInspect={onInspect}
+          onToggle={onToggle}
         />
       )}
-      <Paper
-        variant="outlined"
-        sx={{
-          px: 1,
-          py: 0.5,
-          width: 260,
-          maxWidth: '100%',
-          borderColor: root ? 'primary.main' : 'divider',
-          borderWidth: root ? 2 : 1,
-        }}
-        role="group"
-        aria-label={`${root ? 'Selected resource' : 'Resource'} ${center.name}`}
-      >
-        <Stack direction="row" gap={0.5} alignItems="center">
-          <Box flex={1} minWidth={0}>
-            <Tooltip title={center.name}>
-              {root ? (
-                <Typography fontWeight={600} noWrap color="primary">
-                  {center.name}
-                </Typography>
-              ) : (
-                <Button
-                  size="small"
-                  aria-label={`Inspect ${center.name}`}
-                  onClick={() => onInspect(center)}
-                  sx={{
-                    p: 0,
-                    minWidth: 0,
-                    maxWidth: '100%',
-                    justifyContent: 'flex-start',
-                  }}
-                >
-                  <Box
-                    component="span"
-                    sx={{
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {center.name}
-                  </Box>
-                </Button>
-              )}
-            </Tooltip>
-            <Tooltip
-              title={`${center.type.group || 'core'}/${center.type.version} · ${center.namespace || 'Cluster scoped'} · ${center.uid}`}
-            >
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                noWrap
-                display="block"
-                tabIndex={0}
-                sx={technicalText}
-              >
-                {center.type.kind}
-                {root ? ' · Selected' : ''}
-              </Typography>
-            </Tooltip>
-          </Box>
-          {!root && (
-            <Tooltip
-              title={
-                cycle
-                  ? 'Cycle — already in this chain'
-                  : expanded
-                    ? 'Collapse branch'
-                    : direction === 'parent'
-                      ? 'Show owners'
-                      : 'Show owned resources'
-              }
-            >
-              <span>
-                <IconButton
-                  size="small"
-                  disabled={cycle}
-                  aria-expanded={expanded}
-                  aria-label={`${expanded ? 'Hide' : 'Show'} ${direction === 'parent' ? 'owners of' : 'resources owned by'} ${center.name}`}
-                  onClick={() => setExpanded((value) => !value)}
-                >
-                  <ExpandMoreIcon
-                    sx={{
-                      transform:
-                        expanded || direction === 'parent'
-                          ? 'rotate(180deg)'
-                          : undefined,
-                    }}
-                  />
-                </IconButton>
-              </span>
-            </Tooltip>
-          )}
-        </Stack>
-      </Paper>
-      {expanded && !cycle && !neighborhood && !problem && (
-        <CircularProgress size={24} aria-label="Loading ownership" />
-      )}
-      {problem && (
+      <ResourceCard
+        occurrence={occurrence}
+        root={root}
+        onInspect={onInspect}
+        onToggle={onToggle}
+      />
+      {occurrence.expanded &&
+        !occurrence.cycle &&
+        !neighborhood &&
+        !occurrence.problem && (
+          <CircularProgress size={24} aria-label="Loading ownership" />
+        )}
+      {occurrence.problem && (
         <Alert severity="warning" sx={{ width: 'min(100%, 620px)' }}>
-          {problem}
+          {occurrence.problem}
         </Alert>
       )}
-      {expanded && neighborhood && direction !== 'parent' && (
+      {occurrence.expanded && neighborhood && direction !== 'parent' && (
         <CompletenessNotice
-          label={`Resources owned by ${center.name}`}
+          label={`Resources owned by ${node.name}`}
           value={neighborhood.downward}
-          empty={children.length === 0}
+          empty={!neighborhood.children.length}
         />
       )}
-      {expanded && neighborhood && direction !== 'parent' && (
-        <RelationshipList
-          anchor={center}
-          expandAll={expandAll}
+      {children.length > 0 && (
+        <GraphList
           nodes={children}
-          direction="child"
-          tenantID={tenantID}
-          revision={revision}
-          ancestry={nextAncestry}
+          anchor={node}
           onInspect={onInspect}
+          onToggle={onToggle}
         />
       )}
     </Stack>
   )
 }
 
-function RelationshipList({
+function ResourceCard({
+  occurrence,
+  root,
+  onInspect,
+  onToggle,
+}: {
+  occurrence: HierarchyOccurrence
+  root: boolean
+  onInspect: Props['onInspect']
+  onToggle: (key: string) => void
+}) {
+  const { node, cycle, expanded, direction } = occurrence
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        px: 1,
+        py: 0.5,
+        width: 260,
+        maxWidth: '100%',
+        borderColor: root ? 'primary.main' : 'divider',
+        borderWidth: root ? 2 : 1,
+      }}
+      role="group"
+      aria-label={`${root ? 'Selected resource' : 'Resource'} ${node.name}`}
+    >
+      <Stack direction="row" gap={0.5} alignItems="center">
+        <Box flex={1} minWidth={0}>
+          <Tooltip title={node.name}>
+            {root ? (
+              <Typography fontWeight={600} noWrap color="primary">
+                {node.name}
+              </Typography>
+            ) : (
+              <Button
+                size="small"
+                aria-label={`Inspect ${node.name}`}
+                onClick={() => onInspect(node)}
+                sx={{
+                  p: 0,
+                  minWidth: 0,
+                  maxWidth: '100%',
+                  justifyContent: 'flex-start',
+                }}
+              >
+                <Box
+                  component="span"
+                  sx={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {node.name}
+                </Box>
+              </Button>
+            )}
+          </Tooltip>
+          <Tooltip
+            title={`${node.type.group || 'core'}/${node.type.version} · ${node.namespace || 'Cluster scoped'} · ${node.uid}`}
+          >
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              noWrap
+              display="block"
+              tabIndex={0}
+              sx={technicalText}
+            >
+              {node.type.kind}
+              {root ? ' · Selected' : ''}
+            </Typography>
+          </Tooltip>
+        </Box>
+        {!root && <BranchButton occurrence={occurrence} onToggle={onToggle} />}
+      </Stack>
+    </Paper>
+  )
+}
+
+function BranchButton({
+  occurrence,
+  onToggle,
+}: {
+  occurrence: HierarchyOccurrence
+  onToggle: (key: string) => void
+}) {
+  const { node, cycle, expanded, direction } = occurrence
+  const relationship =
+    direction === 'parent' ? 'owners of' : 'resources owned by'
+  return (
+    <Tooltip
+      title={
+        cycle
+          ? 'Cycle — already in this chain'
+          : expanded
+            ? 'Collapse branch'
+            : direction === 'parent'
+              ? 'Show owners'
+              : 'Show owned resources'
+      }
+    >
+      <span>
+        <IconButton
+          size="small"
+          disabled={cycle}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? 'Hide' : 'Show'} ${relationship} ${node.name}`}
+          onClick={() => onToggle(occurrence.key)}
+        >
+          <ExpandMoreIcon
+            sx={{
+              transform:
+                expanded || direction === 'parent'
+                  ? 'rotate(180deg)'
+                  : undefined,
+            }}
+          />
+        </IconButton>
+      </span>
+    </Tooltip>
+  )
+}
+
+function GraphList({
   nodes,
   anchor,
-  ...props
-}: { nodes: RelationshipNode[]; anchor: RelationshipNode } & Omit<
-  Parameters<typeof NeighborhoodView>[0],
-  'center' | 'root'
->) {
-  return nodes.length ? (
+  onInspect,
+  onToggle,
+}: {
+  nodes: HierarchyOccurrence[]
+  anchor: RelationshipNode
+  onInspect: Props['onInspect']
+  onToggle: (key: string) => void
+}) {
+  const direction = nodes[0].direction
+  return (
     <Box
       role="group"
-      aria-label={`${props.direction === 'parent' ? 'Owners of' : 'Resources owned by'} ${anchor.name}`}
+      aria-label={`${direction === 'parent' ? 'Owners of' : 'Resources owned by'} ${anchor.name}`}
       sx={{ width: '100%', minWidth: 0, overflowX: 'auto', pb: 1 }}
     >
       <Box
@@ -311,37 +314,202 @@ function RelationshipList({
           width: 'max-content',
           minWidth: '100%',
           justifyContent: 'center',
-          alignItems: props.direction === 'parent' ? 'flex-end' : 'flex-start',
+          alignItems: direction === 'parent' ? 'flex-end' : 'flex-start',
         }}
       >
-        {nodes.map((node) => {
+        {nodes.map((occurrence) => {
           const edge = (
             <OwnershipEdge
-              owner={props.direction === 'parent' ? node : anchor}
-              child={props.direction === 'parent' ? anchor : node}
-              controller={node.controller}
+              owner={direction === 'parent' ? occurrence.node : anchor}
+              child={direction === 'parent' ? anchor : occurrence.node}
+              controller={occurrence.controller}
             />
           )
           return (
             <Stack
-              key={nodeIdentity(node)}
+              key={occurrence.key}
               spacing={0.5}
               alignItems="center"
-              sx={{
-                flex: '0 0 260px',
-                width: 260,
-                minWidth: 0,
-              }}
+              sx={{ flex: '0 0 260px', width: 260, minWidth: 0 }}
             >
-              {props.direction === 'child' && edge}
-              <NeighborhoodView {...props} center={node} />
-              {props.direction === 'parent' && edge}
+              {direction === 'child' && edge}
+              <GraphOccurrence
+                occurrence={occurrence}
+                onInspect={onInspect}
+                onToggle={onToggle}
+              />
+              {direction === 'parent' && edge}
             </Stack>
           )
         })}
       </Box>
     </Box>
-  ) : null
+  )
+}
+
+function OwnershipTable({
+  rows,
+  onInspect,
+  onToggle,
+}: {
+  rows: HierarchyOccurrence[]
+  onInspect: Props['onInspect']
+  onToggle: (key: string) => void
+}) {
+  return (
+    <TableContainer sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto' }}>
+      <Table
+        size="small"
+        aria-label="Loaded ownership hierarchy"
+        sx={{ minWidth: 980 }}
+      >
+        <TableHead>
+          <TableRow>
+            <TableCell>Direction / depth</TableCell>
+            <TableCell>Predecessor / relationship</TableCell>
+            <TableCell>Name</TableCell>
+            <TableCell>Kind</TableCell>
+            <TableCell>Namespace</TableCell>
+            <TableCell>Health</TableCell>
+            <TableCell>Controller</TableCell>
+            <TableCell>Branch state</TableCell>
+            <TableCell>Actions</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((occurrence) => (
+            <TableOccurrence
+              key={occurrence.key}
+              occurrence={occurrence}
+              onInspect={onInspect}
+              onToggle={onToggle}
+            />
+          ))}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  )
+}
+
+function TableOccurrence({
+  occurrence,
+  onInspect,
+  onToggle,
+}: {
+  occurrence: HierarchyOccurrence
+  onInspect: Props['onInspect']
+  onToggle: (key: string) => void
+}) {
+  const { node, predecessor, direction } = occurrence
+  const relationship = !predecessor
+    ? 'Selected center'
+    : direction === 'parent'
+      ? `${node.name} owns ${predecessor.name}`
+      : `${predecessor.name} owns ${node.name}`
+  return (
+    <TableRow
+      data-node-identity={nodeIdentity(node)}
+      aria-selected={direction === 'center'}
+      sx={
+        direction === 'center'
+          ? {
+              '& > *': {
+                backgroundColor: 'action.selected',
+                borderBlockColor: 'primary.main',
+              },
+              '& > :first-of-type': {
+                borderLeft: 2,
+                borderLeftColor: 'primary.main',
+              },
+              '& > :last-child': {
+                borderRight: 2,
+                borderRightColor: 'primary.main',
+              },
+            }
+          : undefined
+      }
+    >
+      <TableCell>
+        {direction === 'center'
+          ? 'Center'
+          : direction === 'parent'
+            ? 'Owner'
+            : 'Owned'}{' '}
+        · {occurrence.depth}
+      </TableCell>
+      <TableCell>
+        {predecessor?.name ?? '—'}
+        <Typography variant="caption" display="block">
+          {relationship}
+        </Typography>
+      </TableCell>
+      <TableCell>
+        {node.name}
+        <Typography variant="caption" display="block" sx={technicalText}>
+          UID: {node.uid}
+        </Typography>
+      </TableCell>
+      <TableCell>
+        {node.type.kind}
+        <Typography variant="caption" display="block" sx={technicalText}>
+          {node.type.group || 'core'}/{node.type.version}/{node.type.resource}
+        </Typography>
+      </TableCell>
+      <TableCell>{node.namespace || 'Cluster scoped'}</TableCell>
+      <TableCell>{healthLabel(node)}</TableCell>
+      <TableCell>{occurrence.controller ? 'Controller' : '—'}</TableCell>
+      <TableCell>{branchState(occurrence)}</TableCell>
+      <TableCell>
+        <Stack direction="row" alignItems="center">
+          {direction !== 'center' && (
+            <BranchButton occurrence={occurrence} onToggle={onToggle} />
+          )}
+          {direction !== 'center' && (
+            <Button
+              size="small"
+              aria-label={`Inspect ${node.name}`}
+              onClick={() => onInspect(node)}
+            >
+              Inspect
+            </Button>
+          )}
+        </Stack>
+      </TableCell>
+    </TableRow>
+  )
+}
+
+function branchState(occurrence: HierarchyOccurrence) {
+  if (occurrence.cycle) return 'Cycle — path stopped'
+  if (occurrence.problem) return occurrence.problem
+  if (!occurrence.expanded) {
+    if (!occurrence.neighborhood) return 'Collapsed · not loaded'
+    const completeness =
+      occurrence.direction === 'parent'
+        ? occurrence.neighborhood.upward
+        : occurrence.neighborhood.downward
+    return `Collapsed · loaded · ${completenessState(completeness)}`
+  }
+  if (!occurrence.neighborhood) return 'Loading'
+  if (occurrence.direction === 'center') {
+    return `Owners: ${completenessState(occurrence.neighborhood.upward)} · Owned: ${completenessState(occurrence.neighborhood.downward)}`
+  }
+  return completenessState(
+    occurrence.direction === 'parent'
+      ? occurrence.neighborhood.upward
+      : occurrence.neighborhood.downward,
+  )
+}
+
+function completenessState(completeness: Completeness) {
+  const labels = [completeness.complete ? 'Expanded' : 'Incomplete']
+  if (completeness.configurationLimited) labels.push('configuration-limited')
+  if (completeness.unavailableScopes?.length) labels.push('unavailable')
+  return labels.join(' · ')
+}
+
+function healthLabel(node: RelationshipNode) {
+  return `${node.health.status}${node.health.stale ? ' (stale)' : ''}`
 }
 
 function OwnershipEdge({
@@ -407,13 +575,4 @@ function CompletenessNotice({
         : ''}
     </Typography>
   )
-}
-
-function nodeIdentity(node: RelationshipNode) {
-  return `${node.type.group}/${node.type.version}/${node.type.resource}/${node.uid}`
-}
-
-function relationshipStreamPath(tenantID: string, node: RelationshipNode) {
-  const group = node.type.group || '_core'
-  return `/api/v1/tenants/${encodeURIComponent(tenantID)}/relationship-streams/${encodeURIComponent(group)}/${encodeURIComponent(node.type.version)}/${encodeURIComponent(node.type.resource)}/${encodeURIComponent(node.uid)}`
 }

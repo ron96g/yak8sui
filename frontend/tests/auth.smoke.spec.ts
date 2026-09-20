@@ -5,9 +5,12 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
 }) => {
   test.setTimeout(60_000)
   const eventRequests: string[] = []
+  const relationshipStreamRequests: string[] = []
   const resourceListRequests: string[] = []
   page.on('request', (request) => {
     if (request.url().includes('/events')) eventRequests.push(request.url())
+    if (request.url().includes('/relationship-streams/'))
+      relationshipStreamRequests.push(request.url())
     const url = new URL(request.url())
     if (
       request.method() === 'GET' &&
@@ -256,6 +259,43 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     }),
   ).toBeVisible()
   await expect(
+    ownershipDialog.getByRole('button', { name: 'Graph', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true')
+  await expect
+    .poll(() => relationshipStreamRequests.length)
+    .toBeGreaterThanOrEqual(1)
+  const streamsBeforePresentationSwitch = relationshipStreamRequests.length
+  await ownershipDialog
+    .getByRole('button', { name: 'Table', exact: true })
+    .click()
+  const hierarchyTable = ownershipDialog.getByRole('table', {
+    name: 'Loaded ownership hierarchy',
+  })
+  await expect(hierarchyTable).toBeVisible()
+  await expect(
+    hierarchyTable.getByRole('row', { name: /Owner · 1.*platform-settings/ }),
+  ).toContainText('platform-settings owns platform-api')
+  await expect(
+    hierarchyTable.getByRole('row', { name: /Owned · 1.*platform-runtime/ }),
+  ).toContainText('Unknown')
+  await hierarchyTable
+    .getByRole('button', {
+      name: 'Show owners of platform-settings',
+      exact: true,
+    })
+    .click()
+  await expect(
+    hierarchyTable.getByRole('row', { name: /Owner · 2.*platform-guardrails/ }),
+  ).toBeVisible()
+  await page.waitForTimeout(1_000)
+  expect(relationshipStreamRequests).toHaveLength(
+    streamsBeforePresentationSwitch + 1,
+  )
+  const streamsAfterExpansion = relationshipStreamRequests.length
+  await ownershipDialog
+    .getByRole('button', { name: 'Graph', exact: true })
+    .click()
+  await expect(
     ownershipDialog.getByRole('group', {
       name: 'platform-api owns platform-runtime',
       exact: true,
@@ -273,18 +313,23 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
       exact: true,
     }),
   ).toBeVisible()
-  await ownershipDialog
-    .getByRole('button', {
-      name: 'Show owners of platform-settings',
-      exact: true,
-    })
-    .click()
   await expect(
     ownershipDialog.getByRole('group', {
       name: 'platform-guardrails owns platform-settings',
       exact: true,
     }),
   ).toBeVisible()
+  await ownershipDialog
+    .getByRole('button', { name: 'Table', exact: true })
+    .click()
+  await expect(
+    hierarchyTable.getByRole('row', { name: /Owner · 2.*platform-guardrails/ }),
+  ).toBeVisible()
+  await page.waitForTimeout(250)
+  expect(relationshipStreamRequests).toHaveLength(streamsAfterExpansion)
+  await ownershipDialog
+    .getByRole('button', { name: 'Graph', exact: true })
+    .click()
   await expect(
     ownershipDialog.getByRole('group', {
       name: 'Resource platform-guardrails',
@@ -303,7 +348,7 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   const relatedPlatformAPI = page
     .getByRole('dialog')
     .getByRole('group', { name: 'Resource platform-api', exact: true })
-  await expect(relatedPlatformAPI).toBeVisible()
+  await expect(relatedPlatformAPI).toBeVisible({ timeout: 10_000 })
   await page
     .getByRole('button', {
       name: 'Show resources owned by platform-api',
@@ -325,11 +370,12 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   )
   expect(ownershipUpdate.ok()).toBeTruthy()
   await expect(relatedPlatformAPI).toHaveCount(0)
+  await page.waitForTimeout(1_000)
   const ownershipRestore = await page.request.post(
     '/demo/simulate/ownership-update',
   )
   expect(ownershipRestore.ok()).toBeTruthy()
-  await expect(relatedPlatformAPI).toBeVisible()
+  await expect(relatedPlatformAPI).toBeVisible({ timeout: 10_000 })
   await page
     .getByRole('dialog')
     .getByRole('button', { name: 'Inspect platform-api', exact: true })
