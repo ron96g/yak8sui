@@ -98,7 +98,9 @@ The indented table is the default ownership presentation; use the labelled
 resource names expand or collapse that resource's branch, and indentation makes
 nesting explicit without a separate depth column. Switching views preserves
 loaded and collapsed branches and does not load additional neighborhoods; on
-narrow screens the table scrolls within the ownership view.
+narrow screens the table scrolls within the ownership view. Health is emphasized
+in both presentations with a green check for Healthy, a red error symbol for
+Unhealthy, and a yellow question mark for Unknown or stale state.
 The demo has six resources across four levels and runs all three resolvers:
 UID-stable owner references, a logical composite-label branch, and a structured
 field reference from `platform-api` to `platform-guardrails`:

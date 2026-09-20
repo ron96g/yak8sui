@@ -1,5 +1,8 @@
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward'
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline'
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline'
 import {
   Alert,
   Box,
@@ -343,6 +346,7 @@ function ResourceCard({
             </Typography>
           </Tooltip>
         </Box>
+        <HealthIndicator node={node} compact />
         {!root && <BranchButton occurrence={occurrence} onToggle={onToggle} />}
       </Stack>
     </Paper>
@@ -597,13 +601,65 @@ function TableOccurrence({
         </Typography>
       </TableCell>
       <TableCell>{node.namespace || 'Cluster scoped'}</TableCell>
-      <TableCell>{healthLabel(node)}</TableCell>
+      <TableCell>
+        <HealthIndicator node={node} />
+      </TableCell>
     </TableRow>
   )
 }
 
 function healthLabel(node: RelationshipNode) {
-  return `${node.health.status}${node.health.stale ? ' (stale)' : ''}`
+  return node.health.stale
+    ? `Stale (reported ${node.health.status})`
+    : node.health.status
+}
+
+function HealthIndicator({
+  node,
+  compact = false,
+}: {
+  node: RelationshipNode
+  compact?: boolean
+}) {
+  const label = healthLabel(node)
+  const isHealthy = node.health.status === 'Healthy' && !node.health.stale
+  const isUnhealthy = node.health.status === 'Unhealthy' && !node.health.stale
+  const Icon = isHealthy
+    ? CheckCircleOutlineIcon
+    : isUnhealthy
+      ? ErrorOutlineIcon
+      : HelpOutlineIcon
+  const color = isHealthy
+    ? 'success.main'
+    : isUnhealthy
+      ? 'error.main'
+      : 'warning.main'
+  return (
+    <Tooltip title={label}>
+      <Stack
+        component="span"
+        role="img"
+        direction="row"
+        spacing={0.5}
+        alignItems="center"
+        aria-label={`Health: ${label}`}
+        data-health-icon={
+          isHealthy ? 'check' : isUnhealthy ? 'error' : 'question'
+        }
+        data-health-state={
+          isHealthy ? 'healthy' : isUnhealthy ? 'unhealthy' : 'unknown'
+        }
+        sx={{ color }}
+      >
+        <Icon sx={{ fontSize: compact ? 19 : 20, flex: '0 0 auto' }} />
+        {!compact && (
+          <Typography component="span" variant="body2" color="text.primary">
+            {label}
+          </Typography>
+        )}
+      </Stack>
+    </Tooltip>
+  )
 }
 
 function OwnershipEdge({

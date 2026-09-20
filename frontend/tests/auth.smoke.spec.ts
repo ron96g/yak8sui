@@ -292,6 +292,30 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     name: /platform-runtime.*Owned resource/,
   })
   await expect(runtimeRow).toContainText('Unknown')
+  await expect(runtimeRow.getByLabel('Health: Unknown')).toBeVisible()
+  await expect(runtimeRow.getByLabel('Health: Unknown')).toHaveCSS(
+    'color',
+    'rgb(251, 191, 36)',
+  )
+  await expect(runtimeRow.getByLabel('Health: Unknown')).toHaveAttribute(
+    'data-health-icon',
+    'question',
+  )
+  await expect(
+    hierarchyTable
+      .getByRole('row', { name: /platform-api.*Selected center/ })
+      .getByLabel('Health: Healthy'),
+  ).toBeVisible()
+  await expect(
+    hierarchyTable
+      .getByRole('row', { name: /platform-api.*Selected center/ })
+      .getByLabel('Health: Healthy'),
+  ).toHaveCSS('color', 'rgb(52, 211, 153)')
+  await expect(
+    hierarchyTable
+      .getByRole('row', { name: /platform-api.*Selected center/ })
+      .getByLabel('Health: Healthy'),
+  ).toHaveAttribute('data-health-icon', 'check')
   await expect(runtimeRow).toHaveAttribute('data-depth', '1')
   await hierarchyTable
     .getByRole('button', {
@@ -347,6 +371,16 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   await ownershipDialog
     .getByRole('button', { name: 'Graph', exact: true })
     .click()
+  await expect(
+    ownershipDialog
+      .getByRole('group', { name: 'Selected resource platform-api' })
+      .getByLabel('Health: Healthy'),
+  ).toBeVisible()
+  await expect(
+    ownershipDialog
+      .getByRole('group', { name: 'Resource platform-runtime' })
+      .getByLabel('Health: Unknown'),
+  ).toBeVisible()
   await expect(
     ownershipDialog.getByRole('group', {
       name: 'platform-settings owns platform-api',
@@ -556,6 +590,13 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   await expect(page.locator('.view-lines')).toContainText(
     'ProgressDeadlineExceeded',
   )
+  await page.getByRole('tab', { name: 'Ownership' }).click()
+  const unhealthyIndicator = page
+    .getByRole('table', { name: 'Loaded ownership hierarchy' })
+    .getByRole('row', { name: /payments-worker.*Selected center/ })
+    .getByLabel('Health: Unhealthy')
+  await expect(unhealthyIndicator).toHaveCSS('color', 'rgb(248, 113, 113)')
+  await expect(unhealthyIndicator).toHaveAttribute('data-health-icon', 'error')
 
   await page.getByRole('button', { name: 'Close', exact: true }).click()
   await page.getByRole('button', { name: 'Log out' }).click()
