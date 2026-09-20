@@ -99,6 +99,7 @@ export default function App() {
   const detailRevision = useRef(0)
   const streamRevision = useRef(0)
   const stream = useRef<EventSource | null>(null)
+  const resourceStreamPaused = useRef(false)
   const selectedUID = useRef<string | null>(null)
   const selectedDetailType = useRef<ResourceType | null>(null)
   const [error, setError] = useState<string | null>(() =>
@@ -108,6 +109,7 @@ export default function App() {
   const clearTenantData = useCallback(() => {
     stream.current?.close()
     stream.current = null
+    resourceStreamPaused.current = false
     selectedUID.current = null
     selectedDetailType.current = null
     contextRevision.current += 1
@@ -277,6 +279,11 @@ export default function App() {
       setObservation({ state: 'current' })
       setTotal(initialPage.total)
       setPageCount(initialPage.pageCount)
+      if (resourceStreamPaused.current) {
+        setResourcesLoading(false)
+        setConnectionState('idle')
+        return
+      }
       const source = new EventSource(
         resourceStreamPath(selectedTenant, selectedType) +
           queryString(selectedQuery),
@@ -420,6 +427,35 @@ export default function App() {
     await loadResourceDetail(tenant, resourceType, item.uid, revision)
   }
 
+  function pauseResourceStreamForOwnership() {
+    if (resourceStreamPaused.current) return
+    resourceStreamPaused.current = true
+    streamRevision.current += 1
+    stream.current?.close()
+    stream.current = null
+    setConnectionState('idle')
+  }
+
+  function resumeResourceStreamAfterOwnership() {
+    if (!resourceStreamPaused.current) return
+    resourceStreamPaused.current = false
+    if (tenant && resourceType)
+      void selectResourceType(
+        tenant,
+        resourceType,
+        contextRevision.current,
+        query,
+        true,
+      )
+  }
+
+  function selectDetailTab(value: number) {
+    if (value === detailTab) return
+    if (value === 2) pauseResourceStreamForOwnership()
+    else if (detailTab === 2) resumeResourceStreamAfterOwnership()
+    setDetailTab(value)
+  }
+
   async function loadResourceDetail(
     selectedTenant: Tenant,
     selectedType: ResourceType,
@@ -482,6 +518,7 @@ export default function App() {
     setDetailType(null)
     selectedDetailType.current = null
     setDetailLoading(false)
+    resumeResourceStreamAfterOwnership()
   }
 
   async function logout() {
@@ -682,7 +719,7 @@ export default function App() {
             <>
               <Tabs
                 value={detailTab}
-                onChange={(_, value: number) => setDetailTab(value)}
+                onChange={(_, value: number) => selectDetailTab(value)}
                 aria-label="Resource detail views"
                 sx={{ mb: 2 }}
               >
@@ -715,6 +752,7 @@ export default function App() {
                     selectedUID.current = node.uid
                     setDetailType(node.type)
                     selectedDetailType.current = node.type
+                    resumeResourceStreamAfterOwnership()
                     setDetailTab(0)
                     setDetailLoading(true)
                     void loadResourceDetail(

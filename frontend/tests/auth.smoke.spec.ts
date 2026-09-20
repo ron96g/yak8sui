@@ -318,6 +318,23 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   await expect(
     hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
   ).toBeVisible()
+  await ownershipDialog
+    .getByRole('button', { name: 'Expand entire hierarchy', exact: true })
+    .click()
+  await expect(
+    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
+  ).toBeVisible()
+  await expect
+    .poll(() => relationshipStreamRequests.length)
+    .toBeGreaterThanOrEqual(5)
+  await ownershipDialog
+    .getByRole('button', { name: 'Preview platform-runtime', exact: true })
+    .click()
+  await expect(
+    ownershipDialog
+      .getByRole('region', { name: 'Ownership YAML preview' })
+      .locator('.view-lines'),
+  ).toContainText('mode: safe', { timeout: 5_000 })
   const streamsAfterExpansion = relationshipStreamRequests.length
   await ownershipDialog
     .getByRole('button', { name: 'Graph', exact: true })
