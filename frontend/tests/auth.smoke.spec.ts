@@ -412,6 +412,21 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     .getByRole('dialog')
     .getByRole('group', { name: 'Resource platform-api', exact: true })
   await expect(relatedPlatformAPI).toBeVisible({ timeout: 10_000 })
+  const labelJoinedConfig = page.getByRole('dialog').getByRole('group', {
+    name: 'platform-settings owns platform-feature-flags',
+    exact: true,
+  })
+  await expect(labelJoinedConfig).toBeVisible({ timeout: 10_000 })
+  const labelJoinUpdate = await page.request.post(
+    '/demo/simulate/label-join-update',
+  )
+  expect(labelJoinUpdate.ok()).toBeTruthy()
+  await expect(labelJoinedConfig).toHaveCount(0)
+  const labelJoinRestore = await page.request.post(
+    '/demo/simulate/label-join-update',
+  )
+  expect(labelJoinRestore.ok()).toBeTruthy()
+  await expect(labelJoinedConfig).toBeVisible({ timeout: 10_000 })
   await page
     .getByRole('button', {
       name: 'Show resources owned by platform-api',

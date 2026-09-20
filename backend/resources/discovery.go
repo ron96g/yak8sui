@@ -35,9 +35,10 @@ func (t *Type) GVR() schema.GroupVersionResource {
 }
 
 type Catalog struct {
-	mu    sync.RWMutex
-	types []Type
-	byKey map[string]Type
+	mu              sync.RWMutex
+	types           []Type
+	byKey           map[string]Type
+	discoveredKinds map[string]bool
 }
 
 func (c *Catalog) Types() []Type {
@@ -62,6 +63,12 @@ func (c *Catalog) FindByGroupKind(group, kind string) (Type, bool) {
 		}
 	}
 	return Type{}, false
+}
+
+func (c *Catalog) KindDiscovered(group, kind string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.discoveredKinds[group+"/"+kind]
 }
 
 func (c *Catalog) replaceType(previousKey string, current *Type) {
@@ -120,7 +127,13 @@ func Discover(client Discovery, configured []config.ResourceGroupConfig) *Catalo
 		}
 		byKey[selected[i].Key()] = selected[i]
 	}
-	return &Catalog{types: selected, byKey: byKey}
+	discoveredKinds := map[string]bool{}
+	for group, resources := range available {
+		for resourceKey := range resources {
+			discoveredKinds[group+"/"+resources[resourceKey].Kind] = true
+		}
+	}
+	return &Catalog{types: selected, byKey: byKey, discoveredKinds: discoveredKinds}
 }
 
 func indexDiscovery(groups []*metav1.APIGroup, lists []*metav1.APIResourceList) (map[string]string, map[string][]string, map[string]map[string]metav1.APIResource) {

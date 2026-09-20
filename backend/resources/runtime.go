@@ -31,6 +31,9 @@ type Runtime struct {
 
 func NewRuntime(dynamicClient dynamic.Interface, discoveryClient Discovery, cfg *config.Config, store *Projection) (*Runtime, error) {
 	catalog := Discover(discoveryClient, cfg.Observation.Groups)
+	if err := validateRelationshipTypes(cfg.Observation.Relationships, catalog); err != nil {
+		return nil, err
+	}
 	types := catalog.Types()
 	for i := range types {
 		status := ObservationStatus{State: ObservationResynchronizing, Reason: "backend started; waiting for authoritative relist"}
@@ -42,6 +45,28 @@ func NewRuntime(dynamicClient dynamic.Interface, discoveryClient Discovery, cfg 
 		}
 	}
 	return &Runtime{catalog: catalog, client: dynamicClient, discovery: discoveryClient, cfg: cfg, store: store, controls: map[string]chan ObservationStatus{}, retryInitial: initialRetry, retryMaximum: maximumRetry}, nil
+}
+
+func validateRelationshipTypes(relationships []config.RelationshipConfig, catalog *Catalog) error {
+	types := catalog.Types()
+	for i, relationship := range relationships {
+		for role, endpoint := range map[string]config.RelationshipType{"parent": relationship.Parent, "child": relationship.Child} {
+			if _, ok := catalog.FindByGroupKind(endpoint.Group, endpoint.Kind); ok {
+				continue
+			}
+			endpointMayBeUnavailable := false
+			for i := range types {
+				if types[i].Group == endpoint.Group && !types[i].Available {
+					endpointMayBeUnavailable = true
+					break
+				}
+			}
+			if catalog.KindDiscovered(endpoint.Group, endpoint.Kind) || !endpointMayBeUnavailable {
+				return fmt.Errorf("observation.relationships[%d].%s %s/%s is not selected for observation", i, role, endpoint.Group, endpoint.Kind)
+			}
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) Catalog() *Catalog { return r.catalog }

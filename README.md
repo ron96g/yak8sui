@@ -95,7 +95,8 @@ resource names expand or collapse that resource's branch, and indentation makes
 nesting explicit without a separate depth column. Switching views preserves
 loaded and collapsed branches and does not load additional neighborhoods; on
 narrow screens the table scrolls within the ownership view.
-The demo has five resources across four levels:
+The demo has six resources across four levels and mixes UID-stable owner
+references with a logical composite-label branch:
 
 ```text
 ClusterPolicy platform-guardrails
@@ -103,6 +104,7 @@ ClusterPolicy platform-guardrails
     owns Widget platform-api
       owns ConfigMap platform-runtime
       owns ConfigMap platform-routes
+    owns ConfigMap platform-feature-flags (labelJoin)
 ```
 
 Click **Show owners** on `platform-settings` to reveal `platform-guardrails`.
@@ -111,12 +113,20 @@ automatically, or **Collapse branches** to return to the immediate neighborhood.
 Preview `platform-settings`, then **Show owned resources** on `platform-api` to
 expand the descendant branch. Preview opens live read-only YAML beside the hierarchy
 without changing its center or loaded branches; **Explore from this resource**
-deliberately recenters when desired. Every edge is verified by owner-reference UID;
-configured type pairs alone create no edges. This demo-only control removes or
+deliberately recenters when desired. Owner-reference edges are verified by UID;
+the `platform-feature-flags` edge requires two configured label pairs to be present
+and equal. Configured type pairs alone create no edges. This demo-only control removes or
 restores the `platform-settings` → `platform-api` link live:
 
 ```sh
 curl -X POST http://127.0.0.1:19080/demo/simulate/ownership-update
+```
+
+This demo-only control removes or restores one required label on
+`platform-feature-flags`, removing or restoring its logical edge live:
+
+```sh
+curl -X POST http://127.0.0.1:19080/demo/simulate/label-join-update
 ```
 
 Ownership is not an access grant: every displayed node must independently match
@@ -188,9 +198,15 @@ visible as unavailable without blocking healthy types.
 
 Declare `observation.relationships` as parent/child API-group and kind pairs.
 Both endpoint types must be selected in `observation.groups`; use an empty group
-for core Kubernetes types. `ownerReferences` is the default and only supported
-resolver. Edges require exact owner API group/version, kind, and UID matches;
-the owner-reference name is descriptive rather than identity.
+for core Kubernetes types. `ownerReferences` is the default resolver. Its edges
+require exact owner API group/version, kind, and UID matches; the owner-reference
+name is descriptive rather than identity. A `labelJoin` resolver accepts a non-empty
+list of parent-label/child-label mappings. Every mapped label must be present and
+equal, keys may differ, and each child may match at most one authorized current
+parent. Multiple matches produce no arbitrary edge and make the branch incomplete.
+Projected string labels are maintained transactionally in an indexed SQLite table;
+label joins are resolved by scoped SQL queries rather than by scanning and decoding
+all resources in application memory.
 
 ### Verify
 

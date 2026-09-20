@@ -2,6 +2,7 @@ package resources_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ron96g/yak8sui/backend/config"
@@ -64,5 +65,43 @@ func TestPartialDiscoveryStillReportsExplicitUnavailableType(t *testing.T) {
 	types := catalog.Types()
 	if len(types) != 1 || types[0].Available || types[0].Version != "v1" {
 		t.Fatalf("unavailable types = %#v", types)
+	}
+}
+
+func TestRuntimeRejectsRelationshipTypeOutsideObservation(t *testing.T) {
+	store, err := resources.Open(t.TempDir() + "/projection.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Config{Observation: config.ObservationConfig{
+		Groups: []config.ResourceGroupConfig{{Group: "apps.example.test", Include: []string{"widgets"}}},
+		Relationships: []config.RelationshipConfig{{
+			Parent: config.RelationshipType{Group: "apps.example.test", Kind: "Widget"},
+			Child:  config.RelationshipType{Group: "apps.example.test", Kind: "Unselected"},
+		}},
+	}}
+	fixture := discoveryFixture{groups: []*metav1.APIGroup{{Name: "apps.example.test", Versions: []metav1.GroupVersionForDiscovery{{Version: "v1"}}, PreferredVersion: metav1.GroupVersionForDiscovery{Version: "v1"}}}, resources: []*metav1.APIResourceList{{GroupVersion: "apps.example.test/v1", APIResources: []metav1.APIResource{{Name: "widgets", Kind: "Widget", Namespaced: true}, {Name: "unselected", Kind: "Unselected", Namespaced: true}}}}}
+	if _, err := resources.NewRuntime(nil, fixture, &cfg, store); err == nil || !strings.Contains(err.Error(), "child apps.example.test/Unselected is not selected") {
+		t.Fatalf("relationship endpoint error = %v", err)
+	}
+}
+
+func TestRuntimeAllowsExplicitUnavailableRelationshipTypeWithIrregularKind(t *testing.T) {
+	store, err := resources.Open(t.TempDir() + "/projection.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Config{Observation: config.ObservationConfig{
+		Groups: []config.ResourceGroupConfig{{Group: "apps.example.test", Include: []string{"widgets", "people"}, Types: []config.ResourceTypeOverride{{Resource: "people", Version: "v1"}}}},
+		Relationships: []config.RelationshipConfig{{
+			Parent: config.RelationshipType{Group: "apps.example.test", Kind: "Person"},
+			Child:  config.RelationshipType{Group: "apps.example.test", Kind: "Widget"},
+		}},
+	}}
+	fixture := discoveryFixture{groups: []*metav1.APIGroup{{Name: "apps.example.test", Versions: []metav1.GroupVersionForDiscovery{{Version: "v1"}}, PreferredVersion: metav1.GroupVersionForDiscovery{Version: "v1"}}}, resources: []*metav1.APIResourceList{{GroupVersion: "apps.example.test/v1", APIResources: []metav1.APIResource{{Name: "widgets", Kind: "Widget", Namespaced: true}}}}}
+	if _, err := resources.NewRuntime(nil, fixture, &cfg, store); err != nil {
+		t.Fatalf("explicit unavailable relationship endpoint: %v", err)
 	}
 }

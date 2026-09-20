@@ -59,7 +59,7 @@ func New(cfg *config.Config, oidcClient oidcClient, sessions *auth.Sessions, pro
 	s.resources = projection
 	s.catalog = catalog
 	if projection != nil {
-		s.relationships = resources.NewOwnerReferencesResolver(projection)
+		s.relationships = resources.NewRelationshipResolver(projection)
 	}
 	s.routes()
 	return s
@@ -226,6 +226,9 @@ func (s *Server) relationshipStream(w http.ResponseWriter, r *http.Request, tena
 		return
 	}
 	defer subscription.Close()
+	if !sessionActive(session) {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming is unavailable")
@@ -244,6 +247,11 @@ func (s *Server) relationshipStream(w http.ResponseWriter, r *http.Request, tena
 			return
 		case _, open := <-subscription.Updates:
 			if !open {
+				return
+			}
+			if !sessionActive(session) || !s.tenantAuthorized(session, tenant.ID) {
+				_ = writeSSEEvent(w, "revoked", map[string]string{fieldReason: "tenant is no longer authorized"})
+				flusher.Flush()
 				return
 			}
 			result, err = resolve()

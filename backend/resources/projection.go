@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -154,6 +155,19 @@ CREATE TABLE IF NOT EXISTS resource_tenants (
   FOREIGN KEY (type_key, uid) REFERENCES resources(type_key, uid) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS resource_tenant_scope ON resource_tenants(tenant_id, type_key, uid);
+CREATE TABLE IF NOT EXISTS resource_labels (
+  type_key TEXT NOT NULL, uid TEXT NOT NULL, label_key TEXT NOT NULL, label_value TEXT NOT NULL,
+  PRIMARY KEY (type_key, uid, label_key),
+  FOREIGN KEY (type_key, uid) REFERENCES resources(type_key, uid) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS resource_label_lookup ON resource_labels(type_key, label_key, label_value, uid);
+CREATE TABLE IF NOT EXISTS projection_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT OR IGNORE INTO resource_labels(type_key,uid,label_key,label_value)
+SELECT resources.type_key,resources.uid,labels.key,CAST(labels.value AS TEXT)
+FROM resources,json_each(resources.contents,'$.metadata.labels') AS labels
+WHERE labels.type='text'
+  AND NOT EXISTS (SELECT 1 FROM projection_metadata WHERE key='resource_labels_backfilled');
+INSERT OR IGNORE INTO projection_metadata(key,value) VALUES('resource_labels_backfilled','1');
 CREATE TABLE IF NOT EXISTS observation_scopes (
   type_key TEXT PRIMARY KEY, synchronized INTEGER NOT NULL,
   state TEXT NOT NULL DEFAULT 'resynchronizing', reason TEXT NOT NULL DEFAULT ''
@@ -226,6 +240,9 @@ func (p *Projection) ReplaceSnapshot(ctx context.Context, typeKey string, resour
 		if _, err = tx.ExecContext(ctx, `INSERT INTO resources(type_key,uid,namespace,name,resource_version,contents) VALUES(?,?,?,?,?,?)`, typeKey, resource.UID, resource.Namespace, resource.Name, resource.ResourceVersion, resource.Contents); err != nil {
 			return err
 		}
+		if labelErr := replaceResourceLabels(ctx, tx, typeKey, resource.UID, resource.Contents); labelErr != nil {
+			return labelErr
+		}
 		for _, tenantID := range resource.TenantIDs {
 			if _, err = tx.ExecContext(ctx, `INSERT INTO resource_tenants(type_key,uid,tenant_id) VALUES(?,?,?)`, typeKey, resource.UID, tenantID); err != nil {
 				return err
@@ -263,6 +280,9 @@ func (p *Projection) Replace(ctx context.Context, typeKey, uid, namespace, name,
 	if _, err = tx.ExecContext(ctx, `INSERT INTO resources(type_key,uid,namespace,name,resource_version,contents)
 VALUES(?,?,?,?,?,?) ON CONFLICT(type_key,uid) DO UPDATE SET namespace=excluded.namespace,name=excluded.name,resource_version=excluded.resource_version,contents=excluded.contents`, typeKey, uid, namespace, name, resourceVersion, contents); err != nil {
 		return err
+	}
+	if labelErr := replaceResourceLabels(ctx, tx, typeKey, uid, contents); labelErr != nil {
+		return labelErr
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM resource_tenants WHERE type_key=? AND uid=?`, typeKey, uid); err != nil {
 		return err
@@ -589,6 +609,89 @@ func (p *Projection) authorizedObjects(ctx context.Context, tenantID, typeKey st
 	defer func() {
 		if err := rows.Close(); err != nil {
 			slog.Warn("close relationship rows", "error", err)
+		}
+	}()
+	var result []projectedObject
+	for rows.Next() {
+		var item projectedObject
+		if err := rows.Scan(&item.UID, &item.Namespace, &item.Name, &item.Contents); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+type sqlExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func replaceResourceLabels(ctx context.Context, db sqlExecutor, typeKey, uid string, contents []byte) error {
+	var object struct {
+		Metadata struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(contents, &object); err != nil {
+		return fmt.Errorf("decode resource labels: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM resource_labels WHERE type_key=? AND uid=?`, typeKey, uid); err != nil {
+		return err
+	}
+	for key, value := range object.Metadata.Labels {
+		if _, err := db.ExecContext(ctx, `INSERT INTO resource_labels(type_key,uid,label_key,label_value) VALUES(?,?,?,?)`, typeKey, uid, key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type labelMatch struct {
+	key, value string
+}
+
+func labelLookupQuery(tenantID, typeKey, namespace string, labels []labelMatch, limit int) (string, []any) {
+	sort.Slice(labels, func(i, j int) bool {
+		if labels[i].key != labels[j].key {
+			return labels[i].key < labels[j].key
+		}
+		return labels[i].value < labels[j].value
+	})
+	first := labels[0]
+	statement := `SELECT r.uid,r.namespace,r.name,r.contents FROM resource_labels AS matched INDEXED BY resource_label_lookup
+CROSS JOIN resource_tenants AS m INDEXED BY resource_tenant_scope
+CROSS JOIN resources AS r INDEXED BY sqlite_autoindex_resources_1
+WHERE matched.type_key=? AND matched.label_key=? AND matched.label_value=?
+AND m.tenant_id=? AND m.type_key=matched.type_key AND m.uid=matched.uid
+AND r.type_key=matched.type_key AND r.uid=matched.uid`
+	arguments := []any{typeKey, first.key, first.value, tenantID}
+	if namespace != "" {
+		statement += ` AND r.namespace=?`
+		arguments = append(arguments, namespace)
+	}
+	for _, label := range labels[1:] {
+		statement += ` AND EXISTS (SELECT 1 FROM resource_labels AS l WHERE l.type_key=r.type_key AND l.uid=r.uid AND l.label_key=? AND l.label_value=?)`
+		arguments = append(arguments, label.key, label.value)
+	}
+	if limit > 0 {
+		statement += ` LIMIT ?`
+		arguments = append(arguments, limit)
+	}
+	return statement, arguments
+}
+
+func (p *Projection) authorizedObjectsByLabels(ctx context.Context, tenantID, typeKey, namespace string, labels []labelMatch, limit int) ([]projectedObject, error) {
+	if err := p.requireSynchronized(ctx, typeKey); err != nil {
+		return nil, err
+	}
+	statement, arguments := labelLookupQuery(tenantID, typeKey, namespace, labels, limit)
+	rows, err := p.db.QueryContext(ctx, statement, arguments...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			slog.Warn("close label relationship rows", "error", closeErr)
 		}
 	}()
 	var result []projectedObject

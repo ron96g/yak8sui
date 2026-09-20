@@ -68,7 +68,10 @@ func newEnvironment(t *testing.T, ttl time.Duration) environment {
 		{Group: "widgets.example.test", Include: []string{"widgets", "internalwidgets"}, Exclude: []string{"internalwidgets"}, Types: []config.ResourceTypeOverride{{Resource: "widgets", LabelSelector: "inspect=true"}}},
 		{Group: "policies.example.test", Include: []string{"clusterpolicies", "temporarilyabsent"}, Types: []config.ResourceTypeOverride{{Resource: "clusterpolicies", Version: "v1beta1", LabelSelector: "inspect=true"}, {Resource: "temporarilyabsent", Version: "v1"}}},
 		{Group: "", Include: []string{"configmaps"}, Types: []config.ResourceTypeOverride{{Resource: "configmaps", Version: "v1", LabelSelector: "inspect=true"}}},
-	}, Relationships: []config.RelationshipConfig{{Parent: config.RelationshipType{Group: "", Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "widgets.example.test", Kind: "Widget"}}}}, Tenants: []config.TenantConfig{{ID: "platform", Name: "Platform", Groups: []string{"platform-admins"}, LabelSelector: "tenant in (platform,shared)"}, {ID: "payments", Name: "Payments", Groups: []string{"payments-viewers", "platform-admins"}, LabelSelector: "tenant in (payments,shared)"}}}
+	}, Relationships: []config.RelationshipConfig{
+		{Parent: config.RelationshipType{Group: "", Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "widgets.example.test", Kind: "Widget"}},
+		{Parent: config.RelationshipType{Group: "policies.example.test", Kind: "ClusterPolicy"}, Child: config.RelationshipType{Group: "widgets.example.test", Kind: "Widget"}, Resolver: "labelJoin", LabelJoin: &config.LabelJoinConfig{Labels: []config.LabelJoinMapping{{ParentLabel: "owner", ChildLabel: "policy"}, {ParentLabel: "scope", ChildLabel: "policy-scope"}}}},
+	}}, Tenants: []config.TenantConfig{{ID: "platform", Name: "Platform", Groups: []string{"platform-admins"}, LabelSelector: "tenant in (platform,shared)"}, {ID: "payments", Name: "Payments", Groups: []string{"payments-viewers", "platform-admins"}, LabelSelector: "tenant in (payments,shared)"}}}
 	cfg.Identity.RedirectURL = "http://placeholder/auth/callback"
 	if validateErr := cfg.Validate(); validateErr != nil {
 		t.Fatal(validateErr)
@@ -159,6 +162,107 @@ func TestPublicHTTPOwnershipNeighborhoodIsUIDVerifiedTenantScopedAndLive(t *test
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("inaccessible parent remained in ownership neighborhood")
+}
+
+func TestPublicHTTPLabelJoinOwnershipIsCompositeAuthorizedUnambiguousAndLive(t *testing.T) {
+	env := newEnvironment(t, time.Hour)
+	env.login(t, "allowed")
+	parent := clusterPolicy("logical-parent", "logical-parent", "platform", true)
+	parent.SetLabels(map[string]string{"tenant": "platform", "inspect": "true", "owner": "api", "scope": "production"})
+	hiddenParent := clusterPolicy("hidden-parent", "hidden-parent", "payments", true)
+	hiddenParent.SetLabels(map[string]string{"tenant": "payments", "inspect": "true", "owner": "api", "scope": "production"})
+	child := widget("logical-child", "logical-child", "platform", "Ready", 1)
+	child.SetLabels(map[string]string{"tenant": "platform", "inspect": "true", "policy": "api", "policy-scope": "production"})
+	secondChild := widget("second-child", "second-child", "platform", "Ready", 1)
+	secondChild.SetLabels(map[string]string{"tenant": "platform", "inspect": "true", "policy": "api", "policy-scope": "production"})
+	missingLabel := widget("missing-label", "missing-label", "platform", "Ready", 1)
+	missingLabel.SetLabels(map[string]string{"tenant": "platform", "inspect": "true", "policy": "api"})
+	for _, item := range []*unstructured.Unstructured{parent, hiddenParent} {
+		if _, err := env.kube.Resource(env.policyGVR).Create(t.Context(), item, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []*unstructured.Unstructured{child, secondChild, missingLabel} {
+		if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Create(t.Context(), item, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForItemsAt(t, &env, widgetPath("platform"), "logical-child", "missing-label", "second-child")
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/policies.example.test/v1beta1/clusterpolicies", "logical-parent")
+
+	childPath := env.app.URL + "/api/v1/tenants/platform/relationships/widgets.example.test/v1/widgets/logical-child"
+	parentPath := env.app.URL + "/api/v1/tenants/platform/relationships/policies.example.test/v1beta1/clusterpolicies/logical-parent"
+	assertNeighborhood := func(path string) resources.Neighborhood {
+		t.Helper()
+		response := get(t, env.client, path)
+		var neighborhood resources.Neighborhood
+		decode(t, response, &neighborhood)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("neighborhood status %d: %#v", response.StatusCode, neighborhood)
+		}
+		return neighborhood
+	}
+	upward := assertNeighborhood(childPath)
+	if len(upward.Parents) != 1 || upward.Parents[0].UID != "logical-parent" || upward.Parents[0].Controller || !upward.Upward.Complete {
+		t.Fatalf("label-joined parents = %#v", upward)
+	}
+	downward := assertNeighborhood(parentPath)
+	if len(downward.Children) != 2 || downward.Children[0].UID != "logical-child" || downward.Children[1].UID != "second-child" {
+		t.Fatalf("label-joined children = %#v", downward)
+	}
+	stream, err := env.client.Get(strings.Replace(childPath, "/relationships/", "/relationship-streams/", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	reader := bufio.NewReader(stream.Body)
+	if event, snapshot := readRelationshipEvent(t, reader); event != "snapshot" || len(snapshot.Parents) != 1 {
+		t.Fatalf("initial relationship event %q = %#v", event, snapshot)
+	}
+
+	ambiguous := clusterPolicy("ambiguous-parent", "ambiguous-parent", "platform", true)
+	ambiguous.SetLabels(map[string]string{"tenant": "platform", "inspect": "true", "owner": "api", "scope": "production"})
+	if _, err := env.kube.Resource(env.policyGVR).Create(t.Context(), ambiguous, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/policies.example.test/v1beta1/clusterpolicies", "ambiguous-parent", "logical-parent")
+	event, upward := readRelationshipEvent(t, reader)
+	if event != "snapshot" {
+		t.Fatalf("ambiguity event = %q", event)
+	}
+	if len(upward.Parents) != 0 || upward.Upward.Complete || len(upward.Upward.Problems) != 1 || strings.Contains(upward.Upward.Problems[0].Reason, "logical-parent") {
+		t.Fatalf("ambiguous upward neighborhood = %#v", upward)
+	}
+	downward = assertNeighborhood(parentPath)
+	if len(downward.Children) != 0 || downward.Downward.Complete || len(downward.Downward.Problems) != 1 {
+		t.Fatalf("ambiguous downward neighborhood = %#v", downward)
+	}
+
+	if err := env.kube.Resource(env.policyGVR).Delete(t.Context(), "logical-parent", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	event, upward = readRelationshipEvent(t, reader)
+	if event != "snapshot" || len(upward.Parents) != 1 || upward.Parents[0].UID != "ambiguous-parent" {
+		t.Fatalf("logical ownership did not rebind in %q event: %#v", event, upward)
+	}
+}
+
+func readRelationshipEvent(t *testing.T, reader *bufio.Reader) (string, resources.Neighborhood) {
+	t.Helper()
+	eventLine, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataLine, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = reader.ReadString('\n')
+	var neighborhood resources.Neighborhood
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(dataLine), "data: ")), &neighborhood); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(eventLine, "event: ")), neighborhood
 }
 
 func (e *environment) login(t *testing.T, user string) {

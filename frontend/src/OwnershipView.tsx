@@ -644,6 +644,12 @@ function CompletenessNotice({
         `${scope.group || 'core'}/${scope.kind}: ${scope.observation.state}`,
     )
     .join(', ')
+  const problems = value.problems
+    ?.map(
+      (problem) =>
+        `${problem.parent.group || 'core'}/${problem.parent.kind} → ${problem.child.group || 'core'}/${problem.child.kind}: ${problem.reason}`,
+    )
+    .join(', ')
   return (
     <Typography
       variant="caption"
@@ -654,7 +660,7 @@ function CompletenessNotice({
         ? empty
           ? 'none observed'
           : 'current'
-        : `incomplete (${unavailable || 'observation unavailable'})`}
+        : `incomplete (${problems || unavailable || 'observation unavailable'})`}
       {value.configurationLimited
         ? ' · limited to configured ownership types'
         : ''}

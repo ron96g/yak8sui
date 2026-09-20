@@ -34,8 +34,18 @@ observation:
   relationships:
     - parent: { group: "", kind: "ConfigMap" }
       child: { group: "example.com", kind: "Widget" }
-      # ownerReferences is the default and currently the only supported resolver.
+      # ownerReferences is the default resolver.
       resolver: ownerReferences
+    - parent: { group: "", kind: "ConfigMap" }
+      child: { group: "", kind: "ConfigMap" }
+      resolver: labelJoin
+      labelJoin:
+        # Every parent/child label pair must be present and equal.
+        labels:
+          - parentLabel: "app.kubernetes.io/name"
+            childLabel: "example.com/owner-name"
+          - parentLabel: "app.kubernetes.io/instance"
+            childLabel: "example.com/owner-instance"
 tenants:
   - id: platform
     name: Platform

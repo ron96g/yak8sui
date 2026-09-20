@@ -78,7 +78,7 @@ func TestValidateRejectsContradictoryAndMalformedResourceRules(t *testing.T) {
 	}
 }
 
-func TestValidateDefaultsOwnerReferenceResolverAndRejectsUnsupportedResolver(t *testing.T) {
+func TestValidateDefaultsOwnerReferenceResolverAndAcceptsLabelJoin(t *testing.T) {
 	cfg := config.Config{Server: config.ServerConfig{PublicURL: "https://app.example.test", SessionTTLRaw: "1h"}, Identity: config.IdentityConfig{IssuerURL: "https://id.example.test", ClientID: "client", ClientSecret: "secret", RedirectURL: "https://app.example.test/auth/callback"}, Observation: config.ObservationConfig{DatabasePath: "resources.db", Groups: []config.ResourceGroupConfig{{Group: "", Include: []string{"configmaps"}}, {Group: "example.test", Include: []string{"widgets"}}}, Relationships: []config.RelationshipConfig{{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}}}}, Tenants: []config.TenantConfig{{ID: "one", Name: "One", Groups: []string{"one"}, LabelSelector: "tenant=one"}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -86,8 +86,36 @@ func TestValidateDefaultsOwnerReferenceResolverAndRejectsUnsupportedResolver(t *
 	if cfg.Observation.Relationships[0].Resolver != "ownerReferences" {
 		t.Fatal("resolver default was not applied")
 	}
+	cfg.Observation.Relationships[0] = config.RelationshipConfig{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}, Resolver: "labelJoin", LabelJoin: &config.LabelJoinConfig{Labels: []config.LabelJoinMapping{{ParentLabel: "app.kubernetes.io/name", ChildLabel: "owner.example.test/name"}}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid label join: %v", err)
+	}
 	cfg.Observation.Relationships[0].Resolver = "labelSelector"
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "resolver must be ownerReferences") {
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "resolver must be ownerReferences or labelJoin") {
 		t.Fatalf("unsupported resolver error = %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidLabelJoinOptions(t *testing.T) {
+	base := config.Config{Server: config.ServerConfig{PublicURL: "https://app.example.test", SessionTTLRaw: "1h"}, Identity: config.IdentityConfig{IssuerURL: "https://id.example.test", ClientID: "client", ClientSecret: "secret", RedirectURL: "https://app.example.test/auth/callback"}, Observation: config.ObservationConfig{DatabasePath: "resources.db", Groups: []config.ResourceGroupConfig{{Group: "", Include: []string{"configmaps"}}, {Group: "example.test", Include: []string{"widgets"}}}}, Tenants: []config.TenantConfig{{ID: "one", Name: "One", Groups: []string{"one"}, LabelSelector: "tenant=one"}}}
+	tests := []struct {
+		name         string
+		relationship config.RelationshipConfig
+		want         string
+	}{
+		{name: "missing options", relationship: config.RelationshipConfig{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}, Resolver: "labelJoin"}, want: "labelJoin.labels must contain"},
+		{name: "empty mapping", relationship: config.RelationshipConfig{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}, Resolver: "labelJoin", LabelJoin: &config.LabelJoinConfig{Labels: []config.LabelJoinMapping{{}}}}, want: "parentLabel is required"},
+		{name: "duplicate mapping", relationship: config.RelationshipConfig{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}, Resolver: "labelJoin", LabelJoin: &config.LabelJoinConfig{Labels: []config.LabelJoinMapping{{ParentLabel: "parent", ChildLabel: "child"}, {ParentLabel: "parent", ChildLabel: "child"}}}}, want: "duplicates an earlier mapping"},
+		{name: "surrounding whitespace", relationship: config.RelationshipConfig{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}, Resolver: "labelJoin", LabelJoin: &config.LabelJoinConfig{Labels: []config.LabelJoinMapping{{ParentLabel: " parent", ChildLabel: "child"}}}}, want: "must not have surrounding whitespace"},
+		{name: "options on owner references", relationship: config.RelationshipConfig{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}, LabelJoin: &config.LabelJoinConfig{Labels: []config.LabelJoinMapping{{ParentLabel: "parent", ChildLabel: "child"}}}}, want: "only valid for resolver labelJoin"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := base
+			cfg.Observation.Relationships = []config.RelationshipConfig{test.relationship}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }

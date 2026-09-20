@@ -51,6 +51,14 @@ const (
 	reasonAvailable   = "Available"
 	fieldObservedGen  = "observedGeneration"
 	ownerResolver     = "ownerReferences"
+	labelJoinResolver = "labelJoin"
+	configFamilyLabel = "demo.yak8sui.io/config-family"
+	configScopeLabel  = "demo.yak8sui.io/config-scope"
+	ownerFamilyLabel  = "demo.yak8sui.io/owner-family"
+	ownerScopeLabel   = "demo.yak8sui.io/owner-scope"
+	coreAPIVersion    = "v1"
+	platformNamespace = "platform-system"
+	platformSettings  = "platform-settings"
 )
 
 var (
@@ -74,11 +82,12 @@ func Config(appAddress, appURL, issuerURL, databasePath, webDirectory string) co
 		Observation: config.ObservationConfig{DatabasePath: databasePath, Groups: []config.ResourceGroupConfig{
 			{Group: widgetGroup, Include: []string{widgetResource, excludedResource}, Exclude: []string{excludedResource}, Types: []config.ResourceTypeOverride{{Resource: widgetResource, LabelSelector: inspectSelector}}},
 			{Group: policyGroup, Include: []string{policyResource}, Types: []config.ResourceTypeOverride{{Resource: policyResource, Version: policyVersion, LabelSelector: inspectSelector}}},
-			{Group: "", Include: []string{configMapResource}, Types: []config.ResourceTypeOverride{{Resource: configMapResource, Version: "v1", LabelSelector: inspectSelector}}},
+			{Group: "", Include: []string{configMapResource}, Types: []config.ResourceTypeOverride{{Resource: configMapResource, Version: coreAPIVersion, LabelSelector: inspectSelector}}},
 		}, Relationships: []config.RelationshipConfig{
 			{Parent: config.RelationshipType{Group: policyGroup, Kind: policyKind}, Child: config.RelationshipType{Kind: configMapKind}, Resolver: ownerResolver},
 			{Parent: config.RelationshipType{Kind: configMapKind}, Child: config.RelationshipType{Group: widgetGroup, Kind: widgetKind}, Resolver: ownerResolver},
 			{Parent: config.RelationshipType{Group: widgetGroup, Kind: widgetKind}, Child: config.RelationshipType{Kind: configMapKind}, Resolver: ownerResolver},
+			{Parent: config.RelationshipType{Kind: configMapKind}, Child: config.RelationshipType{Kind: configMapKind}, Resolver: labelJoinResolver, LabelJoin: &config.LabelJoinConfig{Labels: []config.LabelJoinMapping{{ParentLabel: configFamilyLabel, ChildLabel: ownerFamilyLabel}, {ParentLabel: configScopeLabel, ChildLabel: ownerScopeLabel}}}},
 		}},
 		Tenants: []config.TenantConfig{
 			{ID: platformTenant, Name: "Platform", Groups: []string{AdminGroup}, LabelSelector: "yak8sui.io/tenant=" + platformTenant},
@@ -90,17 +99,27 @@ func Config(appAddress, appURL, issuerURL, databasePath, webDirectory string) co
 func Resources() []*unstructured.Unstructured {
 	items := make([]*unstructured.Unstructured, 0, 110)
 	items = append(items,
-		widget("platform-api", "platform-api", "platform-system", "platform", map[string]any{fieldReplicas: int64(3), "image": "example/platform-api:v2"}, true, "All replicas are available"),
+		widget("platform-api", "platform-api", platformNamespace, "platform", map[string]any{fieldReplicas: int64(3), "image": "example/platform-api:v2"}, true, "All replicas are available"),
 		widget("payments-worker", "payments-worker", "payments", "payments", map[string]any{fieldReplicas: int64(2), "queue": "settlements"}, false, "Deployment is below its requested capacity"),
 		widget("internal-only", "internal-only", "internal", "internal", map[string]any{fieldMessage: "must not be visible in configured tenants"}, true, "Internal resource is ready"),
 		clusterPolicy("platform-policy", "platform-guardrails", "platform"),
 		clusterPolicy("payments-policy", "payments-guardrails", "payments"),
-		configMap("platform-config", "platform-settings", "platform-system", "platform"),
+		configMap("platform-config", platformSettings, platformNamespace, "platform"),
 	)
-	items[0].SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "v1", Kind: configMapKind, Name: "platform-settings", UID: "platform-config", Controller: pointer(true)}})
+	items[0].SetOwnerReferences([]metav1.OwnerReference{{APIVersion: coreAPIVersion, Kind: configMapKind, Name: platformSettings, UID: "platform-config", Controller: pointer(true)}})
 	items[5].SetOwnerReferences([]metav1.OwnerReference{{APIVersion: policyBetaGV, Kind: policyKind, Name: "platform-guardrails", UID: "platform-policy", Controller: pointer(true)}})
+	settingsLabels := items[5].GetLabels()
+	settingsLabels[configFamilyLabel] = platformSettings
+	settingsLabels[configScopeLabel] = platformNamespace
+	items[5].SetLabels(settingsLabels)
+	featureFlags := configMap("platform-feature-flags", "platform-feature-flags", platformNamespace, platformTenant)
+	featureLabels := featureFlags.GetLabels()
+	featureLabels[ownerFamilyLabel] = platformSettings
+	featureLabels[ownerScopeLabel] = platformNamespace
+	featureFlags.SetLabels(featureLabels)
+	items = append(items, featureFlags)
 	for _, name := range []string{"platform-runtime", "platform-routes"} {
-		child := configMap(name, name, "platform-system", platformTenant)
+		child := configMap(name, name, platformNamespace, platformTenant)
 		child.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: widgetGV, Kind: widgetKind, Name: "platform-api", UID: "platform-api", Controller: pointer(true)}})
 		items = append(items, child)
 	}
@@ -120,7 +139,7 @@ func DiscoveryResources() []*metav1.APIResourceList {
 		{GroupVersion: widgetGV, APIResources: []metav1.APIResource{{Name: widgetResource, Kind: widgetKind, Namespaced: true}, {Name: excludedResource, Kind: "InternalWidget", Namespaced: true}}},
 		{GroupVersion: policyGV, APIResources: []metav1.APIResource{{Name: policyResource, Kind: policyKind}}},
 		{GroupVersion: policyBetaGV, APIResources: []metav1.APIResource{{Name: policyResource, Kind: policyKind}}},
-		{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: configMapResource, Kind: configMapKind, Namespaced: true}}},
+		{GroupVersion: coreAPIVersion, APIResources: []metav1.APIResource{{Name: configMapResource, Kind: configMapKind, Namespaced: true}}},
 	}
 }
 

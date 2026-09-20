@@ -88,6 +88,7 @@ func run() error {
 	appHandler.HandleFunc("POST /demo/simulate/search-update", demo.SearchSimulationHandler(kube))
 	appHandler.HandleFunc("POST /demo/simulate/observation-loss", demo.ObservationSimulationHandler(observation, kube))
 	appHandler.HandleFunc("POST /demo/simulate/ownership-update", demo.OwnershipSimulationHandler(kube))
+	appHandler.HandleFunc("POST /demo/simulate/label-join-update", demo.LabelJoinSimulationHandler(kube))
 	appServer := &http.Server{Addr: cfg.Server.Address, Handler: appHandler, ReadHeaderTimeout: 5 * time.Second}
 	go serve(appServer)
 	<-ctx.Done()

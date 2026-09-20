@@ -14,6 +14,12 @@ export type Completeness = {
     kind: string
     observation: { state: string; reason?: string }
   }[]
+  problems?: {
+    parent: { group: string; kind: string }
+    child: { group: string; kind: string }
+    resolver: string
+    reason: string
+  }[]
 }
 
 export type Neighborhood = {

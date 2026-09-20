@@ -24,3 +24,18 @@ A relationship between two observed resources proven by a child owner reference 
 
 **Ownership neighborhood**:
 The bounded immediate parents and children of one authorized center resource. Further ownership-chain traversal occurs through explicit, lazy expansion of another neighborhood.
+
+**Ownership hierarchy**:
+The authorized, configured ownership paths assembled from loaded ownership neighborhoods. It is a partial view whose completeness is limited by expansion, observation availability, configuration, and tenant access.
+
+**Ownership resolver**:
+The configured interpretation that proves an ownership edge for one parent/child type pair. Supported interpretations may use Kubernetes owner references, a composite label join, or a structured field reference.
+
+**Composite label join**:
+A logical ownership rule in which every configured parent-label/child-label key pair is present and has equal values. It may dynamically bind a child to a replacement parent with the same labels.
+
+**Field reference**:
+A single structured reference in a child's spec or status that identifies its parent by API version, kind, name, UID, and namespace when required by scope.
+
+**Ownership preview**:
+The live read-only YAML inspection of a selected hierarchy node without changing the hierarchy's center resource, loaded branches, or presentation.

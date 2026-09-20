@@ -28,7 +28,7 @@ func ObservationSimulationHandler(runtime interface {
 			http.Error(w, "observation is already interrupted or restarting", http.StatusConflict)
 			return
 		}
-		resource := client.Resource(WidgetGVR).Namespace("platform-system")
+		resource := client.Resource(WidgetGVR).Namespace(platformNamespace)
 		object, err := resource.Get(r.Context(), "platform-api", metav1.GetOptions{})
 		if err != nil {
 			http.Error(w, "could not mutate controlled upstream", http.StatusInternalServerError)
@@ -165,7 +165,7 @@ func OwnershipSimulationHandler(client dynamic.Interface) http.HandlerFunc {
 		linked := len(object.GetOwnerReferences()) == 0
 		if linked {
 			controller := true
-			object.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "v1", Kind: configMapKind, Name: "platform-settings", UID: "platform-config", Controller: &controller}})
+			object.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: coreAPIVersion, Kind: configMapKind, Name: platformSettings, UID: "platform-config", Controller: &controller}})
 		} else {
 			object.SetOwnerReferences(nil)
 		}
@@ -175,6 +175,38 @@ func OwnershipSimulationHandler(client dynamic.Interface) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]bool{"linked": linked}); err != nil {
+			return
+		}
+	}
+}
+
+// LabelJoinSimulationHandler toggles one required composite-join label.
+func LabelJoinSimulationHandler(client dynamic.Interface) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		resource := client.Resource(ConfigMapGVR).Namespace(platformNamespace)
+		object, err := resource.Get(r.Context(), "platform-feature-flags", metav1.GetOptions{})
+		if err != nil {
+			http.Error(w, "could not load simulated resource", http.StatusInternalServerError)
+			return
+		}
+		labels := object.GetLabels()
+		_, linked := labels[ownerScopeLabel]
+		if linked {
+			delete(labels, ownerScopeLabel)
+		} else {
+			labels[ownerScopeLabel] = platformNamespace
+		}
+		object.SetLabels(labels)
+		if _, err = resource.Update(r.Context(), object, metav1.UpdateOptions{}); err != nil {
+			http.Error(w, "could not update simulated label ownership", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]bool{"linked": !linked}); err != nil {
 			return
 		}
 	}

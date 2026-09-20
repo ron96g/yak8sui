@@ -32,9 +32,19 @@ type RelationshipType struct {
 }
 
 type RelationshipConfig struct {
-	Parent   RelationshipType `yaml:"parent" json:"parent"`
-	Child    RelationshipType `yaml:"child" json:"child"`
-	Resolver string           `yaml:"resolver" json:"resolver"`
+	Parent    RelationshipType `yaml:"parent" json:"parent"`
+	Child     RelationshipType `yaml:"child" json:"child"`
+	Resolver  string           `yaml:"resolver" json:"resolver"`
+	LabelJoin *LabelJoinConfig `yaml:"labelJoin,omitempty" json:"labelJoin,omitempty"`
+}
+
+type LabelJoinConfig struct {
+	Labels []LabelJoinMapping `yaml:"labels" json:"labels"`
+}
+
+type LabelJoinMapping struct {
+	ParentLabel string `yaml:"parentLabel" json:"parentLabel"`
+	ChildLabel  string `yaml:"childLabel" json:"childLabel"`
 }
 
 type ResourceGroupConfig struct {
@@ -160,8 +170,15 @@ func (c *Config) validateRelationships(seenGroups map[string]bool, problems *[]s
 		if relationship.Resolver == "" {
 			relationship.Resolver = "ownerReferences"
 		}
-		if relationship.Resolver != "ownerReferences" {
-			*problems = append(*problems, prefix+".resolver must be ownerReferences")
+		switch relationship.Resolver {
+		case "ownerReferences":
+			if relationship.LabelJoin != nil {
+				*problems = append(*problems, prefix+".labelJoin is only valid for resolver labelJoin")
+			}
+		case "labelJoin":
+			validateLabelJoin(prefix, relationship.LabelJoin, problems)
+		default:
+			*problems = append(*problems, prefix+".resolver must be ownerReferences or labelJoin")
 		}
 		if !seenGroups[relationship.Parent.Group] {
 			*problems = append(*problems, prefix+".parent.group is not configured for observation")
@@ -174,6 +191,34 @@ func (c *Config) validateRelationships(seenGroups map[string]bool, problems *[]s
 			*problems = append(*problems, prefix+" duplicates "+key)
 		}
 		seenRelationships[key] = true
+	}
+}
+
+func validateLabelJoin(prefix string, options *LabelJoinConfig, problems *[]string) {
+	if options == nil || len(options.Labels) == 0 {
+		*problems = append(*problems, prefix+".labelJoin.labels must contain at least one mapping")
+		return
+	}
+	seenMappings := map[string]bool{}
+	for i, mapping := range options.Labels {
+		mappingPrefix := fmt.Sprintf("%s.labelJoin.labels[%d]", prefix, i)
+		parentLabel := strings.TrimSpace(mapping.ParentLabel)
+		childLabel := strings.TrimSpace(mapping.ChildLabel)
+		if parentLabel == "" {
+			*problems = append(*problems, mappingPrefix+".parentLabel is required")
+		} else if parentLabel != mapping.ParentLabel {
+			*problems = append(*problems, mappingPrefix+".parentLabel must not have surrounding whitespace")
+		}
+		if childLabel == "" {
+			*problems = append(*problems, mappingPrefix+".childLabel is required")
+		} else if childLabel != mapping.ChildLabel {
+			*problems = append(*problems, mappingPrefix+".childLabel must not have surrounding whitespace")
+		}
+		key := parentLabel + "\x00" + childLabel
+		if seenMappings[key] {
+			*problems = append(*problems, mappingPrefix+" duplicates an earlier mapping")
+		}
+		seenMappings[key] = true
 	}
 }
 
