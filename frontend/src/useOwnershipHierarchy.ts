@@ -83,18 +83,15 @@ export function useOwnershipHierarchy(
     }
     return nodes
   }, [hierarchy.rows])
-  const requiredIdentityList = [...requiredNodes.keys()].sort().join('|')
   const visibleOccurrenceKeys = hierarchy.rows.map(({ key }) => key)
   const visibleOccurrenceKeyList = visibleOccurrenceKeys.join('|')
   const visibleNodeIdentities = new Set(
     hierarchy.rows.map(({ node }) => nodeIdentity(node)),
   )
   const visibleNodeIdentityList = [...visibleNodeIdentities].sort().join('|')
-  const requiredNodesRef = useRef(requiredNodes)
-  requiredNodesRef.current = requiredNodes
   useEffect(() => {
     const activeSources = sources.current
-    const nodes = requiredNodesRef.current
+    const nodes = requiredNodes
     for (const [identity, source] of activeSources) {
       if (!nodes.has(identity)) {
         source.close()
@@ -167,7 +164,7 @@ export function useOwnershipHierarchy(
         }
       }
     }
-  }, [tenantID, revision, requiredIdentityList])
+  }, [tenantID, revision, requiredNodes])
 
   useEffect(() => {
     const occurrenceKeys = new Set(visibleOccurrenceKeys)

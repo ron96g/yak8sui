@@ -89,12 +89,12 @@ controlled in-process simulations rather than a real network or API server.
 
 Open `platform-api`, then choose **Ownership**. Read downward: each connector
 states which resource owns the next. The selected resource has a highlighted border.
-Use the labelled **Graph/Table** control to switch between the directional graph
-and a compact table of the same loaded hierarchy. The table reports each row's
-direction, depth, predecessor relationship, identity, health, controller marker,
-and branch state. Switching views preserves loaded and collapsed branches and
-does not load additional neighborhoods; on narrow screens the table scrolls
-within the ownership view.
+The indented table is the default ownership presentation; use the labelled
+**Table/Graph** control to switch to the directional graph. Disclosure controls beside
+resource names expand or collapse that resource's branch, and indentation makes
+nesting explicit without a separate depth column. Switching views preserves
+loaded and collapsed branches and does not load additional neighborhoods; on
+narrow screens the table scrolls within the ownership view.
 The demo has five resources across four levels:
 
 ```text

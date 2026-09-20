@@ -44,6 +44,7 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
     path: testInfo.outputPath('conditions-modal.png'),
   })
   await page.getByRole('tab', { name: 'Ownership' }).click()
+  await page.getByRole('button', { name: 'Graph', exact: true }).click()
   await expect(
     page.getByRole('group', {
       name: 'Resource platform-settings',
@@ -132,12 +133,8 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
   await page.getByText('platform-api', { exact: true }).click()
   await page.getByRole('tab', { name: 'Ownership' }).click()
   await expect(
-    page.getByRole('group', {
-      name: 'Resource platform-settings',
-      exact: true,
-    }),
+    page.getByRole('table', { name: 'Loaded ownership hierarchy' }),
   ).toBeVisible()
-  await page.getByRole('button', { name: 'Table', exact: true }).click()
   const narrowTable = page.getByRole('table', {
     name: 'Loaded ownership hierarchy',
   })

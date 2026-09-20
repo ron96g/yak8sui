@@ -253,31 +253,37 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   await page.getByRole('tab', { name: 'Ownership' }).click()
   const ownershipDialog = page.getByRole('dialog')
   await expect(
-    ownershipDialog.getByRole('group', {
-      name: 'platform-settings owns platform-api',
-      exact: true,
-    }),
-  ).toBeVisible()
-  await expect(
-    ownershipDialog.getByRole('button', { name: 'Graph', exact: true }),
+    ownershipDialog.getByRole('button', { name: 'Table', exact: true }),
   ).toHaveAttribute('aria-pressed', 'true')
   await expect
     .poll(() => relationshipStreamRequests.length)
     .toBeGreaterThanOrEqual(1)
   const streamsBeforePresentationSwitch = relationshipStreamRequests.length
-  await ownershipDialog
-    .getByRole('button', { name: 'Table', exact: true })
-    .click()
   const hierarchyTable = ownershipDialog.getByRole('table', {
     name: 'Loaded ownership hierarchy',
   })
   await expect(hierarchyTable).toBeVisible()
   await expect(
-    hierarchyTable.getByRole('row', { name: /Owner · 1.*platform-settings/ }),
-  ).toContainText('platform-settings owns platform-api')
+    hierarchyTable.getByRole('columnheader', {
+      name: 'Predecessor / relationship',
+    }),
+  ).toHaveCount(0)
   await expect(
-    hierarchyTable.getByRole('row', { name: /Owned · 1.*platform-runtime/ }),
-  ).toContainText('Unknown')
+    hierarchyTable.getByRole('columnheader', { name: 'Branch state' }),
+  ).toHaveCount(0)
+  await expect(
+    hierarchyTable.getByRole('columnheader', { name: 'Depth', exact: true }),
+  ).toHaveCount(0)
+  const settingsRow = hierarchyTable.getByRole('row', {
+    name: /platform-settings.*Owner/,
+  })
+  await expect(settingsRow).toBeVisible()
+  await expect(settingsRow).toHaveAttribute('data-depth', '1')
+  const runtimeRow = hierarchyTable.getByRole('row', {
+    name: /platform-runtime.*Owned resource/,
+  })
+  await expect(runtimeRow).toContainText('Unknown')
+  await expect(runtimeRow).toHaveAttribute('data-depth', '1')
   await hierarchyTable
     .getByRole('button', {
       name: 'Show owners of platform-settings',
@@ -285,16 +291,43 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     })
     .click()
   await expect(
-    hierarchyTable.getByRole('row', { name: /Owner · 2.*platform-guardrails/ }),
+    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
   ).toBeVisible()
+  await expect(
+    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
+  ).toHaveAttribute('data-depth', '2')
   await page.waitForTimeout(1_000)
   expect(relationshipStreamRequests).toHaveLength(
     streamsBeforePresentationSwitch + 1,
   )
+  await hierarchyTable
+    .getByRole('button', {
+      name: 'Hide owners of platform-settings',
+      exact: true,
+    })
+    .click()
+  await expect(
+    hierarchyTable.getByRole('row', { name: /platform-guardrails/ }),
+  ).toHaveCount(0)
+  await hierarchyTable
+    .getByRole('button', {
+      name: 'Show owners of platform-settings',
+      exact: true,
+    })
+    .click()
+  await expect(
+    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
+  ).toBeVisible()
   const streamsAfterExpansion = relationshipStreamRequests.length
   await ownershipDialog
     .getByRole('button', { name: 'Graph', exact: true })
     .click()
+  await expect(
+    ownershipDialog.getByRole('group', {
+      name: 'platform-settings owns platform-api',
+      exact: true,
+    }),
+  ).toBeVisible()
   await expect(
     ownershipDialog.getByRole('group', {
       name: 'platform-api owns platform-runtime',
@@ -323,7 +356,7 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     .getByRole('button', { name: 'Table', exact: true })
     .click()
   await expect(
-    hierarchyTable.getByRole('row', { name: /Owner · 2.*platform-guardrails/ }),
+    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
   ).toBeVisible()
   await page.waitForTimeout(250)
   expect(relationshipStreamRequests).toHaveLength(streamsAfterExpansion)
@@ -345,6 +378,7 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   await page.getByRole('tab', { name: 'YAML' }).click()
   await expect(page.locator('.view-lines')).toContainText('mode: safe')
   await page.getByRole('tab', { name: 'Ownership' }).click()
+  await page.getByRole('button', { name: 'Graph', exact: true }).click()
   const relatedPlatformAPI = page
     .getByRole('dialog')
     .getByRole('group', { name: 'Resource platform-api', exact: true })

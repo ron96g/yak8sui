@@ -44,7 +44,7 @@ export default function OwnershipView(props: Props) {
 }
 
 function OwnershipPresentation(props: Props) {
-  const [presentation, setPresentation] = useState<'graph' | 'table'>('graph')
+  const [presentation, setPresentation] = useState<'graph' | 'table'>('table')
   const hierarchy = useOwnershipHierarchy(
     props.tenantID,
     props.center,
@@ -361,18 +361,15 @@ function OwnershipTable({
       <Table
         size="small"
         aria-label="Loaded ownership hierarchy"
-        sx={{ minWidth: 980 }}
+        sx={{ minWidth: 720 }}
       >
         <TableHead>
           <TableRow>
-            <TableCell>Direction / depth</TableCell>
-            <TableCell>Predecessor / relationship</TableCell>
-            <TableCell>Name</TableCell>
+            <TableCell>Resource</TableCell>
             <TableCell>Kind</TableCell>
             <TableCell>Namespace</TableCell>
             <TableCell>Health</TableCell>
             <TableCell>Controller</TableCell>
-            <TableCell>Branch state</TableCell>
             <TableCell>Actions</TableCell>
           </TableRow>
         </TableHead>
@@ -400,15 +397,17 @@ function TableOccurrence({
   onInspect: Props['onInspect']
   onToggle: (key: string) => void
 }) {
-  const { node, predecessor, direction } = occurrence
-  const relationship = !predecessor
-    ? 'Selected center'
-    : direction === 'parent'
-      ? `${node.name} owns ${predecessor.name}`
-      : `${predecessor.name} owns ${node.name}`
+  const { node, direction } = occurrence
+  const directionLabel =
+    direction === 'center'
+      ? 'Selected center'
+      : direction === 'parent'
+        ? 'Owner'
+        : 'Owned resource'
   return (
     <TableRow
       data-node-identity={nodeIdentity(node)}
+      data-depth={occurrence.depth}
       aria-selected={direction === 'center'}
       sx={
         direction === 'center'
@@ -429,25 +428,29 @@ function TableOccurrence({
           : undefined
       }
     >
-      <TableCell>
-        {direction === 'center'
-          ? 'Center'
-          : direction === 'parent'
-            ? 'Owner'
-            : 'Owned'}{' '}
-        · {occurrence.depth}
-      </TableCell>
-      <TableCell>
-        {predecessor?.name ?? '—'}
-        <Typography variant="caption" display="block">
-          {relationship}
-        </Typography>
-      </TableCell>
-      <TableCell>
-        {node.name}
-        <Typography variant="caption" display="block" sx={technicalText}>
-          UID: {node.uid}
-        </Typography>
+      <TableCell sx={{ pl: 1 + occurrence.depth * 3 }}>
+        <Stack direction="row" alignItems="center" spacing={0.5}>
+          {direction !== 'center' ? (
+            <BranchButton occurrence={occurrence} onToggle={onToggle} />
+          ) : (
+            <Box sx={{ width: 34, flex: '0 0 34px' }} />
+          )}
+          <Box minWidth={0}>
+            <Typography fontWeight={direction === 'center' ? 600 : 400}>
+              {node.name}
+            </Typography>
+            <Typography
+              variant="caption"
+              display="block"
+              color="text.secondary"
+            >
+              {directionLabel}
+            </Typography>
+            <Typography variant="caption" display="block" sx={technicalText}>
+              UID: {node.uid}
+            </Typography>
+          </Box>
+        </Stack>
       </TableCell>
       <TableCell>
         {node.type.kind}
@@ -458,54 +461,19 @@ function TableOccurrence({
       <TableCell>{node.namespace || 'Cluster scoped'}</TableCell>
       <TableCell>{healthLabel(node)}</TableCell>
       <TableCell>{occurrence.controller ? 'Controller' : '—'}</TableCell>
-      <TableCell>{branchState(occurrence)}</TableCell>
       <TableCell>
-        <Stack direction="row" alignItems="center">
-          {direction !== 'center' && (
-            <BranchButton occurrence={occurrence} onToggle={onToggle} />
-          )}
-          {direction !== 'center' && (
-            <Button
-              size="small"
-              aria-label={`Inspect ${node.name}`}
-              onClick={() => onInspect(node)}
-            >
-              Inspect
-            </Button>
-          )}
-        </Stack>
+        {direction !== 'center' && (
+          <Button
+            size="small"
+            aria-label={`Inspect ${node.name}`}
+            onClick={() => onInspect(node)}
+          >
+            Inspect
+          </Button>
+        )}
       </TableCell>
     </TableRow>
   )
-}
-
-function branchState(occurrence: HierarchyOccurrence) {
-  if (occurrence.cycle) return 'Cycle — path stopped'
-  if (occurrence.problem) return occurrence.problem
-  if (!occurrence.expanded) {
-    if (!occurrence.neighborhood) return 'Collapsed · not loaded'
-    const completeness =
-      occurrence.direction === 'parent'
-        ? occurrence.neighborhood.upward
-        : occurrence.neighborhood.downward
-    return `Collapsed · loaded · ${completenessState(completeness)}`
-  }
-  if (!occurrence.neighborhood) return 'Loading'
-  if (occurrence.direction === 'center') {
-    return `Owners: ${completenessState(occurrence.neighborhood.upward)} · Owned: ${completenessState(occurrence.neighborhood.downward)}`
-  }
-  return completenessState(
-    occurrence.direction === 'parent'
-      ? occurrence.neighborhood.upward
-      : occurrence.neighborhood.downward,
-  )
-}
-
-function completenessState(completeness: Completeness) {
-  const labels = [completeness.complete ? 'Expanded' : 'Incomplete']
-  if (completeness.configurationLimited) labels.push('configuration-limited')
-  if (completeness.unavailableScopes?.length) labels.push('unavailable')
-  return labels.join(' · ')
 }
 
 function healthLabel(node: RelationshipNode) {
