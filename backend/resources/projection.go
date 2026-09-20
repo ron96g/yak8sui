@@ -345,6 +345,28 @@ func (p *Projection) SnapshotAndSubscribe(ctx context.Context, tenantID, typeKey
 	return page, &Subscription{Updates: updates, close: func() { p.unsubscribe(typeKey, id, updates) }}, nil
 }
 
+// DetailSnapshotAndSubscribe creates a UID-scoped replacement subscription in
+// the same commit critical section as its initial authorized read.
+func (p *Projection) DetailSnapshotAndSubscribe(ctx context.Context, tenantID, typeKey, uid string) (Detail, *Subscription, error) {
+	p.liveMu.Lock()
+	defer p.liveMu.Unlock()
+	detail, err := p.Get(ctx, tenantID, typeKey, uid)
+	if err != nil {
+		return Detail{}, nil, err
+	}
+	if p.snapshotHook != nil {
+		p.snapshotHook()
+	}
+	p.nextLiveID++
+	id := p.nextLiveID
+	updates := make(chan struct{}, 1)
+	if p.subscribers[typeKey] == nil {
+		p.subscribers[typeKey] = map[uint64]chan struct{}{}
+	}
+	p.subscribers[typeKey][id] = updates
+	return detail, &Subscription{Updates: updates, close: func() { p.unsubscribe(typeKey, id, updates) }}, nil
+}
+
 func (p *Projection) publishLocked(typeKey string) {
 	p.publishSubscribersLocked(typeKey)
 }

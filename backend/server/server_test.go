@@ -349,6 +349,77 @@ func TestResourceStreamUpdatesReadyHealthAcrossCurrentStaleAndUnhealthyStates(t 
 	assertSnapshotHealth(t, snapshots, "Unhealthy", false)
 }
 
+func TestDetailStreamIsUIDScopedLiveAndTerminalOnRevocation(t *testing.T) {
+	env := newEnvironment(t, time.Hour)
+	env.login(t, "allowed")
+	item := widget("preview-uid", "preview", "platform", "Ready", 1)
+	if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Create(t.Context(), item, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItems(t, &env, "platform", "preview-uid")
+	path := env.app.URL + "/api/v1/tenants/platform/detail-streams/widgets.example.test/v1/widgets/preview-uid"
+	response, err := env.client.Get(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("detail stream response %d %q", response.StatusCode, response.Header.Get("Content-Type"))
+	}
+	reader := bufio.NewReader(response.Body)
+	event, detail := readDetailEvent(t, reader)
+	if event != "snapshot" || detail.UID != "preview-uid" || !strings.Contains(detail.YAML, "generation: 1") {
+		t.Fatalf("initial detail event %q = %#v", event, detail)
+	}
+	item.SetGeneration(2)
+	if _, updateErr := env.kube.Resource(env.gvr).Namespace("team-a").Update(t.Context(), item, metav1.UpdateOptions{}); updateErr != nil {
+		t.Fatal(updateErr)
+	}
+	event, detail = readDetailEvent(t, reader)
+	if event != "snapshot" || detail.UID != "preview-uid" || !strings.Contains(detail.YAML, "generation: 2") {
+		t.Fatalf("updated detail event %q = %#v", event, detail)
+	}
+	item.SetLabels(map[string]string{"tenant": "payments", "inspect": "true"})
+	if _, updateErr := env.kube.Resource(env.gvr).Namespace("team-a").Update(t.Context(), item, metav1.UpdateOptions{}); updateErr != nil {
+		t.Fatal(updateErr)
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil || line != "event: revoked\n" {
+		t.Fatalf("revocation event = %q, %v", line, err)
+	}
+
+	if deleteErr := env.kube.Resource(env.gvr).Namespace("team-a").Delete(t.Context(), "preview", metav1.DeleteOptions{}); deleteErr != nil {
+		t.Fatal(deleteErr)
+	}
+	recreated := widget("replacement-uid", "preview", "platform", "Ready", 3)
+	if _, createErr := env.kube.Resource(env.gvr).Namespace("team-a").Create(t.Context(), recreated, metav1.CreateOptions{}); createErr != nil {
+		t.Fatal(createErr)
+	}
+	waitForItems(t, &env, "platform", "replacement-uid")
+	oldResponse := get(t, env.client, path)
+	if oldResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("old UID detail stream status = %d: %s", oldResponse.StatusCode, body(oldResponse))
+	}
+}
+
+func readDetailEvent(t *testing.T, reader *bufio.Reader) (string, resources.Detail) {
+	t.Helper()
+	eventLine, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataLine, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = reader.ReadString('\n')
+	var detail resources.Detail
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(dataLine), "data: ")), &detail); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(eventLine, "event: ")), detail
+}
+
 func TestResourceStreamDeliversCommittedTenantScopedReplacementSnapshots(t *testing.T) {
 	env := newEnvironment(t, time.Hour)
 	env.login(t, "allowed")

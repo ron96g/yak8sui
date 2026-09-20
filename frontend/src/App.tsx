@@ -711,7 +711,7 @@ export default function App() {
                   tenantID={tenant.id}
                   revision={hierarchyRevision.current}
                   center={{ ...detail, type: detailType }}
-                  onInspect={(node: RelationshipNode) => {
+                  onExplore={(node: RelationshipNode) => {
                     selectedUID.current = node.uid
                     setDetailType(node.type)
                     selectedDetailType.current = node.type

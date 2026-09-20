@@ -19,8 +19,9 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { technicalText } from './theme'
+import { useResourcePreview } from './useResourcePreview'
 import {
   type Completeness,
   type HierarchyOccurrence,
@@ -35,20 +36,36 @@ type Props = {
   tenantID: string
   center: RelationshipNode
   revision: number
-  onInspect: (node: RelationshipNode) => void
+  onExplore: (node: RelationshipNode) => void
 }
+
+const YamlViewer = lazy(() => import('./YamlViewer'))
 
 export default function OwnershipView(props: Props) {
   const contextKey = `${props.tenantID}/${nodeIdentity(props.center)}/${props.revision}`
-  return <OwnershipPresentation key={contextKey} {...props} />
+  return (
+    <OwnershipPresentation
+      key={contextKey}
+      {...props}
+      initialPreview={props.center}
+    />
+  )
 }
 
-function OwnershipPresentation(props: Props) {
+function OwnershipPresentation(
+  props: Props & { initialPreview: RelationshipNode },
+) {
   const [presentation, setPresentation] = useState<'graph' | 'table'>('table')
+  const [preview, setPreview] = useState(props.initialPreview)
   const hierarchy = useOwnershipHierarchy(
     props.tenantID,
     props.center,
     props.revision,
+  )
+  const previewState = useResourcePreview(
+    props.tenantID,
+    nodeIdentity(props.center),
+    preview,
   )
   return (
     <Stack spacing={2} minWidth={0}>
@@ -76,20 +93,102 @@ function OwnershipPresentation(props: Props) {
           Collapse branches
         </Button>
       </Stack>
-      {presentation === 'graph' ? (
-        <GraphOccurrence
-          occurrence={hierarchy.root}
-          onInspect={props.onInspect}
-          onToggle={hierarchy.toggle}
-          root
-        />
-      ) : (
-        <OwnershipTable
-          rows={hierarchy.rows}
-          onInspect={props.onInspect}
-          onToggle={hierarchy.toggle}
-        />
-      )}
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: {
+            xs: 'minmax(0, 1fr)',
+            lg: 'minmax(0, 1.15fr) minmax(340px, .85fr)',
+          },
+          gap: 2,
+          minWidth: 0,
+        }}
+      >
+        <Box minWidth={0}>
+          {presentation === 'graph' ? (
+            <GraphOccurrence
+              occurrence={hierarchy.root}
+              onInspect={setPreview}
+              onToggle={hierarchy.toggle}
+              root
+            />
+          ) : (
+            <OwnershipTable
+              rows={hierarchy.rows}
+              onInspect={setPreview}
+              onToggle={hierarchy.toggle}
+            />
+          )}
+        </Box>
+        <Paper
+          component="section"
+          variant="outlined"
+          aria-label="Ownership YAML preview"
+          sx={{ p: 2, minWidth: 0 }}
+        >
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="center"
+            gap={1}
+            mb={1}
+          >
+            <Box minWidth={0}>
+              <Typography variant="subtitle1" noWrap>
+                {preview.name}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={technicalText}
+              >
+                UID: {preview.uid}
+              </Typography>
+            </Box>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => props.onExplore(preview)}
+            >
+              Explore from this resource
+            </Button>
+          </Stack>
+          {previewState.status === 'current' ? (
+            <Box
+              sx={{
+                height: { xs: 360, md: 480, lg: '60vh' },
+                maxHeight: 700,
+                border: 1,
+                borderColor: 'divider',
+                overflow: 'hidden',
+              }}
+            >
+              <Suspense
+                fallback={
+                  <CircularProgress aria-label="Loading preview YAML" />
+                }
+              >
+                <YamlViewer value={previewState.detail.yaml} />
+              </Suspense>
+            </Box>
+          ) : previewState.status === 'loading' ? (
+            <Alert severity="info" role="status">
+              Loading YAML preview…
+            </Alert>
+          ) : previewState.status === 'reconnecting' ? (
+            <Alert severity="warning" role="status">
+              Preview stream is reconnecting…
+            </Alert>
+          ) : 'message' in previewState ? (
+            <Alert
+              severity={previewState.status === 'revoked' ? 'error' : 'warning'}
+              role="status"
+            >
+              {previewState.message}
+            </Alert>
+          ) : null}
+        </Paper>
+      </Box>
     </Stack>
   )
 }
@@ -101,7 +200,7 @@ function GraphOccurrence({
   root = false,
 }: {
   occurrence: HierarchyOccurrence
-  onInspect: Props['onInspect']
+  onInspect: (node: RelationshipNode) => void
   onToggle: (key: string) => void
   root?: boolean
 }) {
@@ -173,7 +272,7 @@ function ResourceCard({
 }: {
   occurrence: HierarchyOccurrence
   root: boolean
-  onInspect: Props['onInspect']
+  onInspect: (node: RelationshipNode) => void
   onToggle: (key: string) => void
 }) {
   const { node, cycle, expanded, direction } = occurrence
@@ -195,13 +294,18 @@ function ResourceCard({
         <Box flex={1} minWidth={0}>
           <Tooltip title={node.name}>
             {root ? (
-              <Typography fontWeight={600} noWrap color="primary">
+              <Button
+                size="small"
+                aria-label={`Preview ${node.name}`}
+                onClick={() => onInspect(node)}
+                sx={{ p: 0, minWidth: 0, color: 'primary.main' }}
+              >
                 {node.name}
-              </Typography>
+              </Button>
             ) : (
               <Button
                 size="small"
-                aria-label={`Inspect ${node.name}`}
+                aria-label={`Preview ${node.name}`}
                 onClick={() => onInspect(node)}
                 sx={{
                   p: 0,
@@ -273,7 +377,11 @@ function BranchButton({
           disabled={cycle}
           aria-expanded={expanded}
           aria-label={`${expanded ? 'Hide' : 'Show'} ${relationship} ${node.name}`}
-          onClick={() => onToggle(occurrence.key)}
+          onKeyDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggle(occurrence.key)
+          }}
         >
           <ExpandMoreIcon
             sx={{
@@ -297,7 +405,7 @@ function GraphList({
 }: {
   nodes: HierarchyOccurrence[]
   anchor: RelationshipNode
-  onInspect: Props['onInspect']
+  onInspect: (node: RelationshipNode) => void
   onToggle: (key: string) => void
 }) {
   const direction = nodes[0].direction
@@ -353,7 +461,7 @@ function OwnershipTable({
   onToggle,
 }: {
   rows: HierarchyOccurrence[]
-  onInspect: Props['onInspect']
+  onInspect: (node: RelationshipNode) => void
   onToggle: (key: string) => void
 }) {
   return (
@@ -394,7 +502,7 @@ function TableOccurrence({
   onToggle,
 }: {
   occurrence: HierarchyOccurrence
-  onInspect: Props['onInspect']
+  onInspect: (node: RelationshipNode) => void
   onToggle: (key: string) => void
 }) {
   const { node, direction } = occurrence
@@ -409,6 +517,14 @@ function TableOccurrence({
       data-node-identity={nodeIdentity(node)}
       data-depth={occurrence.depth}
       aria-selected={direction === 'center'}
+      tabIndex={0}
+      onClick={() => onInspect(node)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onInspect(node)
+        }
+      }}
       sx={
         direction === 'center'
           ? {
@@ -462,15 +578,16 @@ function TableOccurrence({
       <TableCell>{healthLabel(node)}</TableCell>
       <TableCell>{occurrence.controller ? 'Controller' : '—'}</TableCell>
       <TableCell>
-        {direction !== 'center' && (
-          <Button
-            size="small"
-            aria-label={`Inspect ${node.name}`}
-            onClick={() => onInspect(node)}
-          >
-            Inspect
-          </Button>
-        )}
+        <Button
+          size="small"
+          aria-label={`Preview ${node.name}`}
+          onClick={(event) => {
+            event.stopPropagation()
+            onInspect(node)
+          }}
+        >
+          Preview
+        </Button>
       </TableCell>
     </TableRow>
   )

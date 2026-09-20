@@ -108,9 +108,10 @@ ClusterPolicy platform-guardrails
 Click **Show owners** on `platform-settings` to reveal `platform-guardrails`.
 Use **Expand entire hierarchy** to load all accessible ancestors and descendants
 automatically, or **Collapse branches** to return to the immediate neighborhood.
-Inspect `platform-settings`, then **Show owned resources** on `platform-api` to
-expand the descendant branch. Inspect opens a resource's Conditions/YAML and lets
-you explore from that resource. Every edge is verified by owner-reference UID;
+Preview `platform-settings`, then **Show owned resources** on `platform-api` to
+expand the descendant branch. Preview opens live read-only YAML beside the hierarchy
+without changing its center or loaded branches; **Explore from this resource**
+deliberately recenters when desired. Every edge is verified by owner-reference UID;
 configured type pairs alone create no edges. This demo-only control removes or
 restores the `platform-settings` → `platform-api` link live:
 

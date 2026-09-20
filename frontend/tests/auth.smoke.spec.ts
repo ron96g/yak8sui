@@ -370,13 +370,25 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     }),
   ).toBeVisible()
   await ownershipDialog
-    .getByRole('button', { name: 'Inspect platform-settings', exact: true })
+    .getByRole('button', { name: 'Preview platform-settings', exact: true })
+    .click()
+  await expect(
+    ownershipDialog.getByRole('region', { name: 'Ownership YAML preview' }),
+  ).toContainText('platform-settings')
+  await expect(ownershipDialog.locator('.view-lines')).toContainText(
+    'mode: safe',
+  )
+  await expect(
+    ownershipDialog.getByRole('group', {
+      name: 'Selected resource platform-api',
+    }),
+  ).toBeVisible()
+  await ownershipDialog
+    .getByRole('button', { name: 'Explore from this resource' })
     .click()
   await expect(
     page.getByRole('dialog', { name: 'platform-settings — Resource details' }),
   ).toBeVisible()
-  await page.getByRole('tab', { name: 'YAML' }).click()
-  await expect(page.locator('.view-lines')).toContainText('mode: safe')
   await page.getByRole('tab', { name: 'Ownership' }).click()
   await page.getByRole('button', { name: 'Graph', exact: true }).click()
   const relatedPlatformAPI = page
@@ -412,20 +424,17 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   await expect(relatedPlatformAPI).toBeVisible({ timeout: 10_000 })
   await page
     .getByRole('dialog')
-    .getByRole('button', { name: 'Inspect platform-api', exact: true })
+    .getByRole('button', { name: 'Preview platform-api', exact: true })
     .click()
-  await page.getByRole('tab', { name: 'YAML' }).click()
   const simulatedUpdate = await page.request.post(
     '/demo/simulate/widget-update',
   )
   expect(simulatedUpdate.ok()).toBeTruthy()
-  await expect(page.locator('.view-lines')).toContainText('generation: 4')
   await expect(
-    page.getByRole('button', { name: 'Inspect platform-api' }),
-  ).toHaveCount(0)
-  await expect(
-    page.getByRole('dialog', { name: 'platform-api — Resource details' }),
-  ).toBeVisible()
+    page
+      .getByRole('region', { name: 'Ownership YAML preview' })
+      .locator('.view-lines'),
+  ).toContainText('generation: 4')
   await page.keyboard.press('Escape')
   await page.getByRole('button', { name: 'Clear JSON filter' }).click()
   await page.getByText('platform-api', { exact: true }).click()

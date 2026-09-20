@@ -30,6 +30,7 @@ const (
 	fieldID       = "id"
 	fieldName     = "name"
 	fieldError    = "error"
+	fieldReason   = "reason"
 )
 
 type oidcClient interface {
@@ -74,6 +75,7 @@ func (s *Server) routes() {
 	if s.resources != nil && s.catalog != nil {
 		s.mux.HandleFunc("GET /api/v1/configuration", s.requireSession(s.configuration))
 		s.mux.HandleFunc("GET /api/v1/tenants/{tenant}/resource-streams/{group}/{version}/{resource}", s.requireTenant(s.resourceStream))
+		s.mux.HandleFunc("GET /api/v1/tenants/{tenant}/detail-streams/{group}/{version}/{resource}/{uid}", s.requireTenant(s.detailStream))
 		s.mux.HandleFunc("GET /api/v1/tenants/{tenant}/resources/{group}/{version}/{resource}", s.requireTenant(s.resourceList))
 		s.mux.HandleFunc("GET /api/v1/tenants/{tenant}/resources/{group}/{version}/{resource}/{uid}", s.requireTenant(s.resourceDetail))
 		s.mux.HandleFunc("GET /api/v1/tenants/{tenant}/relationships/{group}/{version}/{resource}/{uid}", s.requireTenant(s.relationshipNeighborhood))
@@ -87,6 +89,108 @@ func (s *Server) routes() {
 			http.Error(w, "frontend is not built; run npm run build", http.StatusServiceUnavailable)
 		})
 	}
+}
+
+func (s *Server) detailStream(w http.ResponseWriter, r *http.Request, tenant config.TenantConfig) {
+	resourceType, ok := s.requestedType(r)
+	if !ok {
+		writeError(w, http.StatusNotFound, "configured resource type not found")
+		return
+	}
+	session, ok := sessionFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "session context unavailable")
+		return
+	}
+	uid := r.PathValue("uid")
+	detail, subscription, err := s.resources.DetailSnapshotAndSubscribe(r.Context(), tenant.ID, resourceType.Key(), uid)
+	if s.writeDetailError(w, r, &resourceType, err) {
+		return
+	}
+	defer subscription.Close()
+	if !sessionActive(session) {
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming is unavailable")
+		return
+	}
+	setSSEHeaders(w)
+	if !writeSSEEvent(w, "snapshot", detail) {
+		return
+	}
+	flusher.Flush()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-session.Done():
+			return
+		case _, open := <-subscription.Updates:
+			if !open {
+				return
+			}
+			if !sessionActive(session) || !s.tenantAuthorized(session, tenant.ID) {
+				_ = writeSSEEvent(w, "revoked", map[string]string{fieldReason: "tenant is no longer authorized"})
+				flusher.Flush()
+				return
+			}
+			detail, err = s.resources.Get(r.Context(), tenant.ID, resourceType.Key(), uid)
+			if errors.Is(err, resources.ErrNotSynchronized) {
+				status, statusErr := s.resources.ObservationStatus(r.Context(), resourceType.Key())
+				if statusErr == nil {
+					_ = writeSSEEvent(w, "observation", status)
+					flusher.Flush()
+				}
+				return
+			}
+			if errors.Is(err, sql.ErrNoRows) {
+				_ = writeSSEEvent(w, "revoked", map[string]string{fieldReason: "resource is no longer visible"})
+				flusher.Flush()
+				return
+			}
+			if err != nil || !sessionActive(session) || !writeSSEEvent(w, "snapshot", detail) {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func sessionActive(session *auth.Session) bool {
+	select {
+	case <-session.Done():
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *Server) writeDetailError(w http.ResponseWriter, r *http.Request, resourceType *resources.Type, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, resources.ErrNotSynchronized) {
+		s.writeObservationError(w, r, resourceType.Key())
+		return true
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return true
+	}
+	slog.Error("stream resource detail", "error", err)
+	writeError(w, http.StatusInternalServerError, "could not stream resource")
+	return true
+}
+
+func (s *Server) tenantAuthorized(session *auth.Session, tenantID string) bool {
+	for _, tenant := range s.authorizedTenants(session.Identity.Groups) {
+		if tenant.ID == tenantID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) relationshipNeighborhood(w http.ResponseWriter, r *http.Request, tenant config.TenantConfig) {
@@ -153,7 +257,7 @@ func (s *Server) relationshipStream(w http.ResponseWriter, r *http.Request, tena
 				return
 			}
 			if errors.Is(err, sql.ErrNoRows) {
-				_ = writeSSEEvent(w, "revoked", map[string]string{"reason": "resource is no longer visible"})
+				_ = writeSSEEvent(w, "revoked", map[string]string{fieldReason: "resource is no longer visible"})
 				flusher.Flush()
 				return
 			}

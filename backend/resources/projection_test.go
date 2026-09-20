@@ -128,6 +128,59 @@ func TestSnapshotSubscriptionDoesNotLoseCommitDuringSetup(t *testing.T) {
 	}
 }
 
+func TestDetailSubscriptionDoesNotLoseCommitDuringSetup(t *testing.T) {
+	store, err := Open(t.TempDir() + "/projection.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	const typeKey = "widgets.example.test/v1/widgets"
+	if err := store.SetSynchronized(t.Context(), typeKey, true); err != nil {
+		t.Fatal(err)
+	}
+	contents, _ := json.Marshal(map[string]any{"metadata": map[string]any{"uid": "detail-uid", "name": "detail"}})
+	if err := store.Replace(t.Context(), typeKey, "detail-uid", "", "detail", "1", contents, []string{"platform"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshotReached := make(chan struct{})
+	releaseSnapshot := make(chan struct{})
+	store.snapshotHook = func() {
+		close(snapshotReached)
+		<-releaseSnapshot
+	}
+	type result struct {
+		subscription *Subscription
+		err          error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		_, subscription, snapshotErr := store.DetailSnapshotAndSubscribe(context.Background(), "platform", typeKey, "detail-uid")
+		resultCh <- result{subscription: subscription, err: snapshotErr}
+	}()
+	<-snapshotReached
+	committed := make(chan error, 1)
+	go func() {
+		committed <- store.Replace(context.Background(), typeKey, "detail-uid", "", "detail", "2", contents, []string{"platform"})
+	}()
+	close(releaseSnapshot)
+	created := <-resultCh
+	if created.err != nil {
+		t.Fatal(created.err)
+	}
+	defer created.subscription.Close()
+	if err := <-committed; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case _, ok := <-created.subscription.Updates:
+		if !ok {
+			t.Fatal("detail subscription closed instead of delivering setup-race invalidation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("commit during detail snapshot setup was lost")
+	}
+}
+
 func TestPersistedSnapshotIsWithheldUntilAtomicRecoveryReplacesMembership(t *testing.T) {
 	path := t.TempDir() + "/projection.db"
 	store, err := Open(path)

@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test'
 test('deep-space theme remains legible and keyboard-visible across key views', async ({
   page,
 }, testInfo) => {
+  test.setTimeout(60_000)
   const thirdPartyRequests: string[] = []
   page.on('request', (request) => {
     const url = new URL(request.url())
@@ -98,9 +99,6 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
     Math.min(routesBox!.width, runtimeBox!.width),
   )
   await page
-    .getByRole('dialog')
-    .screenshot({ path: testInfo.outputPath('ownership-siblings.png') })
-  await page
     .getByRole('button', { name: 'Collapse branches', exact: true })
     .click()
   await expect(
@@ -139,6 +137,11 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
     name: 'Loaded ownership hierarchy',
   })
   await expect(narrowTable).toBeVisible()
+  const narrowPreview = page.getByRole('region', {
+    name: 'Ownership YAML preview',
+  })
+  await expect(narrowPreview.locator('.monaco-editor')).toBeVisible()
+  expect((await narrowPreview.boundingBox())!.height).toBeLessThan(700)
   const tableViewport = narrowTable.locator('..')
   expect(
     await tableViewport.evaluate(
