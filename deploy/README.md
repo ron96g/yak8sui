@@ -40,7 +40,9 @@ Copy `deploy/config.example.yaml` to ignored `config/local.yaml`. Set the extern
 HTTPS URL, OIDC issuer/client/secret/callback, identity groups, tenant selectors,
 and observed resource types. The callback is `<publicURL>/auth/callback`. Keep
 the container paths for the frontend and SQLite. Omit kubeconfig to use the
-ServiceAccount's in-cluster credentials.
+ServiceAccount's in-cluster credentials. The example declares
+`config/config.schema.json` for YAML language servers, providing completion and
+early structural validation; application startup validation remains authoritative.
 
 The example observes selected `cert-manager.io` types only. They must exist in
 the target cluster; missing configured types appear unavailable. It installs

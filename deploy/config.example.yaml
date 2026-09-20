@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../config/config.schema.json
 server:
   address: ":8080"
   publicURL: "https://yak8sui.example.com"

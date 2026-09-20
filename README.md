@@ -200,6 +200,12 @@ go run ./cmd/yak8sui -config config/local.yaml
 
 Configuration is restart-required. `cookieSecure` defaults to true for an HTTPS `publicURL`; local plain-HTTP development may explicitly set `cookieSecure: false`. Client secrets should be injected into the local/deployment file from a secret manager and must not be committed.
 
+`config/config.schema.json` provides editor completion and structural validation
+for configuration YAML. Both checked-in examples reference it. Regenerate it after
+changing configuration types with `go generate ./backend/config`; the Go test suite
+checks that the generated file is current. Runtime validation remains authoritative
+for Kubernetes-specific and cross-field rules.
+
 Tenant access is read-only by default through `groups`. Optional
 `supervisorGroups` add the trigger action, while `adminGroups` add trigger,
 update, and delete; either role group also grants access to that tenant. The

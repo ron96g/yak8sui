@@ -12,83 +12,85 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
+//go:generate go run ../../cmd/configschema -output ../../config/config.schema.json
+
 type Config struct {
-	Server      ServerConfig      `yaml:"server"`
-	Identity    IdentityConfig    `yaml:"identity"`
-	Observation ObservationConfig `yaml:"observation"`
-	Tenants     []TenantConfig    `yaml:"tenants"`
+	Server      ServerConfig      `yaml:"server" jsonschema:"required" jsonschema_description:"HTTP server and browser-session settings."`
+	Identity    IdentityConfig    `yaml:"identity" jsonschema:"required" jsonschema_description:"OpenID Connect identity-provider settings."`
+	Observation ObservationConfig `yaml:"observation" jsonschema:"required" jsonschema_description:"Kubernetes discovery, observation, and relationship settings."`
+	Tenants     []TenantConfig    `yaml:"tenants" jsonschema:"required,minItems=1" jsonschema_description:"Tenant security boundaries. At least one access or role group is required per tenant."`
 }
 
 type ObservationConfig struct {
-	DatabasePath  string                `yaml:"databasePath"`
-	Kubeconfig    string                `yaml:"kubeconfig"`
-	Groups        []ResourceGroupConfig `yaml:"groups"`
-	Relationships []RelationshipConfig  `yaml:"relationships"`
+	DatabasePath  string                `yaml:"databasePath" jsonschema:"required,minLength=1" jsonschema_description:"Writable SQLite database path."`
+	Kubeconfig    string                `yaml:"kubeconfig" jsonschema_description:"Optional kubeconfig path; omit to use in-cluster credentials."`
+	Groups        []ResourceGroupConfig `yaml:"groups" jsonschema:"required,minItems=1" jsonschema_description:"API groups and resources selected for observation."`
+	Relationships []RelationshipConfig  `yaml:"relationships" jsonschema_description:"Configured directional ownership relationships."`
 }
 
 type RelationshipType struct {
-	Group string `yaml:"group" json:"group"`
-	Kind  string `yaml:"kind" json:"kind"`
+	Group string `yaml:"group" json:"group" jsonschema_description:"API group; use an empty string for Kubernetes core resources."`
+	Kind  string `yaml:"kind" json:"kind" jsonschema:"required,minLength=1" jsonschema_description:"Case-sensitive Kubernetes kind."`
 }
 
 type RelationshipConfig struct {
-	Parent         RelationshipType      `yaml:"parent" json:"parent"`
-	Child          RelationshipType      `yaml:"child" json:"child"`
-	Resolver       string                `yaml:"resolver" json:"resolver"`
-	LabelJoin      *LabelJoinConfig      `yaml:"labelJoin,omitempty" json:"labelJoin,omitempty"`
-	FieldReference *FieldReferenceConfig `yaml:"fieldReference,omitempty" json:"fieldReference,omitempty"`
+	Parent         RelationshipType      `yaml:"parent" json:"parent" jsonschema:"required"`
+	Child          RelationshipType      `yaml:"child" json:"child" jsonschema:"required"`
+	Resolver       string                `yaml:"resolver" json:"resolver" jsonschema:"enum=ownerReferences,enum=labelJoin,enum=fieldReference,default=ownerReferences" jsonschema_description:"Relationship resolver; defaults to ownerReferences."`
+	LabelJoin      *LabelJoinConfig      `yaml:"labelJoin,omitempty" json:"labelJoin,omitempty" jsonschema_description:"Required options when resolver is labelJoin."`
+	FieldReference *FieldReferenceConfig `yaml:"fieldReference,omitempty" json:"fieldReference,omitempty" jsonschema_description:"Required options when resolver is fieldReference."`
 }
 
 type FieldReferenceConfig struct {
-	Path string `yaml:"path" json:"path"`
+	Path string `yaml:"path" json:"path" jsonschema:"required,pattern=^\\$\\.(spec|status)\\.[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*$" jsonschema_description:"Field-only path below $.spec or $.status; arrays and wildcards are unsupported."`
 }
 
 type LabelJoinConfig struct {
-	Labels []LabelJoinMapping `yaml:"labels" json:"labels"`
+	Labels []LabelJoinMapping `yaml:"labels" json:"labels" jsonschema:"required,minItems=1"`
 }
 
 type LabelJoinMapping struct {
-	ParentLabel string `yaml:"parentLabel" json:"parentLabel"`
-	ChildLabel  string `yaml:"childLabel" json:"childLabel"`
+	ParentLabel string `yaml:"parentLabel" json:"parentLabel" jsonschema:"required,minLength=1"`
+	ChildLabel  string `yaml:"childLabel" json:"childLabel" jsonschema:"required,minLength=1"`
 }
 
 type ResourceGroupConfig struct {
-	Group   string                 `yaml:"group"`
-	Include []string               `yaml:"include"`
-	Exclude []string               `yaml:"exclude"`
-	Types   []ResourceTypeOverride `yaml:"types"`
+	Group   string                 `yaml:"group" jsonschema_description:"API group; use an empty string for Kubernetes core resources."`
+	Include []string               `yaml:"include" jsonschema:"uniqueItems=true" jsonschema_description:"Resource names to include; an empty list discovers the full API group."`
+	Exclude []string               `yaml:"exclude" jsonschema:"uniqueItems=true" jsonschema_description:"Resource names to exclude; exclusions take precedence."`
+	Types   []ResourceTypeOverride `yaml:"types" jsonschema_description:"Per-resource version and label-selector overrides."`
 }
 
 type ResourceTypeOverride struct {
-	Resource      string `yaml:"resource"`
-	Version       string `yaml:"version"`
-	LabelSelector string `yaml:"labelSelector"`
+	Resource      string `yaml:"resource" jsonschema:"required,minLength=1" jsonschema_description:"Plural Kubernetes API resource name."`
+	Version       string `yaml:"version" jsonschema_description:"Served version override; omit to use the preferred version."`
+	LabelSelector string `yaml:"labelSelector" jsonschema_description:"Additional Kubernetes label selector for this resource type."`
 }
 
 type ServerConfig struct {
-	Address       string        `yaml:"address"`
-	PublicURL     string        `yaml:"publicURL"`
-	WebDirectory  string        `yaml:"webDirectory"`
+	Address       string        `yaml:"address" jsonschema:"default=:8080" jsonschema_description:"HTTP listen address."`
+	PublicURL     string        `yaml:"publicURL" jsonschema:"required,format=uri" jsonschema_description:"Externally visible absolute HTTP or HTTPS URL."`
+	WebDirectory  string        `yaml:"webDirectory" jsonschema:"default=frontend/dist" jsonschema_description:"Directory containing the built frontend."`
 	SessionTTL    time.Duration `yaml:"-"`
-	SessionTTLRaw string        `yaml:"sessionTTL"`
-	CookieSecure  *bool         `yaml:"cookieSecure"`
+	SessionTTLRaw string        `yaml:"sessionTTL" jsonschema:"default=8h" jsonschema_description:"Positive Go duration for browser sessions, for example 8h or 30m. Syntax is validated at startup."`
+	CookieSecure  *bool         `yaml:"cookieSecure" jsonschema_description:"Override secure-cookie behavior; defaults to true for HTTPS publicURL."`
 }
 
 type IdentityConfig struct {
-	IssuerURL    string `yaml:"issuerURL"`
-	ClientID     string `yaml:"clientID"`
-	ClientSecret string `yaml:"clientSecret"`
-	RedirectURL  string `yaml:"redirectURL"`
-	GroupsClaim  string `yaml:"groupsClaim"`
+	IssuerURL    string `yaml:"issuerURL" jsonschema:"required,format=uri" jsonschema_description:"Absolute HTTP or HTTPS OpenID Connect issuer URL."`
+	ClientID     string `yaml:"clientID" jsonschema:"required,minLength=1"`
+	ClientSecret string `yaml:"clientSecret" jsonschema:"required,minLength=1" jsonschema_description:"OIDC client secret; inject through a secret manager."`
+	RedirectURL  string `yaml:"redirectURL" jsonschema:"required,format=uri" jsonschema_description:"OIDC callback URL using the publicURL origin and /auth/callback path."`
+	GroupsClaim  string `yaml:"groupsClaim" jsonschema:"default=groups,minLength=1" jsonschema_description:"OIDC claim containing identity-provider group names."`
 }
 
 type TenantConfig struct {
-	ID               string   `yaml:"id"`
-	Name             string   `yaml:"name"`
-	Groups           []string `yaml:"groups"`
-	SupervisorGroups []string `yaml:"supervisorGroups"`
-	AdminGroups      []string `yaml:"adminGroups"`
-	LabelSelector    string   `yaml:"labelSelector"`
+	ID               string   `yaml:"id" jsonschema:"required,minLength=1,pattern=^[^/?#]+$"`
+	Name             string   `yaml:"name" jsonschema:"required,minLength=1"`
+	Groups           []string `yaml:"groups" jsonschema_description:"Identity-provider groups granted read-only access."`
+	SupervisorGroups []string `yaml:"supervisorGroups" jsonschema_description:"Identity-provider groups granted read and trigger access."`
+	AdminGroups      []string `yaml:"adminGroups" jsonschema_description:"Identity-provider groups granted read, trigger, update, and delete access."`
+	LabelSelector    string   `yaml:"labelSelector" jsonschema:"required,minLength=1" jsonschema_description:"Kubernetes label selector defining this tenant's resources."`
 }
 
 func Load(path string) (Config, error) {

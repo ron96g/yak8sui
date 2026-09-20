@@ -1,0 +1,341 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ron96g/yak8sui/config/config",
+  "$defs": {
+    "FieldReferenceConfig": {
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^\\$\\.(spec|status)\\.[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*$",
+          "description": "Field-only path below $.spec or $.status; arrays and wildcards are unsupported."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path"
+      ]
+    },
+    "IdentityConfig": {
+      "properties": {
+        "issuerURL": {
+          "type": "string",
+          "format": "uri",
+          "description": "Absolute HTTP or HTTPS OpenID Connect issuer URL."
+        },
+        "clientID": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientSecret": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OIDC client secret; inject through a secret manager."
+        },
+        "redirectURL": {
+          "type": "string",
+          "format": "uri",
+          "description": "OIDC callback URL using the publicURL origin and /auth/callback path."
+        },
+        "groupsClaim": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OIDC claim containing identity-provider group names.",
+          "default": "groups"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "issuerURL",
+        "clientID",
+        "clientSecret",
+        "redirectURL"
+      ]
+    },
+    "LabelJoinConfig": {
+      "properties": {
+        "labels": {
+          "items": {
+            "$ref": "#/$defs/LabelJoinMapping"
+          },
+          "type": "array",
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "labels"
+      ]
+    },
+    "LabelJoinMapping": {
+      "properties": {
+        "parentLabel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "childLabel": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "parentLabel",
+        "childLabel"
+      ]
+    },
+    "ObservationConfig": {
+      "properties": {
+        "databasePath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Writable SQLite database path."
+        },
+        "kubeconfig": {
+          "type": "string",
+          "description": "Optional kubeconfig path; omit to use in-cluster credentials."
+        },
+        "groups": {
+          "items": {
+            "$ref": "#/$defs/ResourceGroupConfig"
+          },
+          "type": "array",
+          "minItems": 1,
+          "description": "API groups and resources selected for observation."
+        },
+        "relationships": {
+          "items": {
+            "$ref": "#/$defs/RelationshipConfig"
+          },
+          "type": "array",
+          "description": "Configured directional ownership relationships."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "databasePath",
+        "groups"
+      ]
+    },
+    "RelationshipConfig": {
+      "properties": {
+        "parent": {
+          "$ref": "#/$defs/RelationshipType"
+        },
+        "child": {
+          "$ref": "#/$defs/RelationshipType"
+        },
+        "resolver": {
+          "type": "string",
+          "enum": [
+            "ownerReferences",
+            "labelJoin",
+            "fieldReference"
+          ],
+          "description": "Relationship resolver; defaults to ownerReferences.",
+          "default": "ownerReferences"
+        },
+        "labelJoin": {
+          "$ref": "#/$defs/LabelJoinConfig",
+          "description": "Required options when resolver is labelJoin."
+        },
+        "fieldReference": {
+          "$ref": "#/$defs/FieldReferenceConfig",
+          "description": "Required options when resolver is fieldReference."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "parent",
+        "child"
+      ]
+    },
+    "RelationshipType": {
+      "properties": {
+        "group": {
+          "type": "string",
+          "description": "API group; use an empty string for Kubernetes core resources."
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Case-sensitive Kubernetes kind."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind"
+      ]
+    },
+    "ResourceGroupConfig": {
+      "properties": {
+        "group": {
+          "type": "string",
+          "description": "API group; use an empty string for Kubernetes core resources."
+        },
+        "include": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Resource names to include; an empty list discovers the full API group."
+        },
+        "exclude": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Resource names to exclude; exclusions take precedence."
+        },
+        "types": {
+          "items": {
+            "$ref": "#/$defs/ResourceTypeOverride"
+          },
+          "type": "array",
+          "description": "Per-resource version and label-selector overrides."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ResourceTypeOverride": {
+      "properties": {
+        "resource": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Plural Kubernetes API resource name."
+        },
+        "version": {
+          "type": "string",
+          "description": "Served version override; omit to use the preferred version."
+        },
+        "labelSelector": {
+          "type": "string",
+          "description": "Additional Kubernetes label selector for this resource type."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "resource"
+      ]
+    },
+    "ServerConfig": {
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "HTTP listen address.",
+          "default": ":8080"
+        },
+        "publicURL": {
+          "type": "string",
+          "format": "uri",
+          "description": "Externally visible absolute HTTP or HTTPS URL."
+        },
+        "webDirectory": {
+          "type": "string",
+          "description": "Directory containing the built frontend.",
+          "default": "frontend/dist"
+        },
+        "sessionTTL": {
+          "type": "string",
+          "description": "Positive Go duration for browser sessions, for example 8h or 30m. Syntax is validated at startup.",
+          "default": "8h"
+        },
+        "cookieSecure": {
+          "type": "boolean",
+          "description": "Override secure-cookie behavior; defaults to true for HTTPS publicURL."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "publicURL"
+      ]
+    },
+    "TenantConfig": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/?#]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Identity-provider groups granted read-only access."
+        },
+        "supervisorGroups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Identity-provider groups granted read and trigger access."
+        },
+        "adminGroups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Identity-provider groups granted read, trigger, update, and delete access."
+        },
+        "labelSelector": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Kubernetes label selector defining this tenant's resources."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "labelSelector"
+      ]
+    }
+  },
+  "properties": {
+    "server": {
+      "$ref": "#/$defs/ServerConfig",
+      "description": "HTTP server and browser-session settings."
+    },
+    "identity": {
+      "$ref": "#/$defs/IdentityConfig",
+      "description": "OpenID Connect identity-provider settings."
+    },
+    "observation": {
+      "$ref": "#/$defs/ObservationConfig",
+      "description": "Kubernetes discovery, observation, and relationship settings."
+    },
+    "tenants": {
+      "items": {
+        "$ref": "#/$defs/TenantConfig"
+      },
+      "type": "array",
+      "minItems": 1,
+      "description": "Tenant security boundaries. At least one access or role group is required per tenant."
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "server",
+    "identity",
+    "observation",
+    "tenants"
+  ]
+}
