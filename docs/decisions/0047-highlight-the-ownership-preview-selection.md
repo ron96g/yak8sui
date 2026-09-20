@@ -1,0 +1,5 @@
+# Highlight the ownership preview selection
+
+Keep the ownership hierarchy center and YAML preview selection as separate concepts. Mark the row whose resource is currently displayed in the YAML preview with `aria-selected`, and mark its graph card with `aria-current`. Give both presentations a primary-tinted background, a stronger primary border, and the text “Displayed in YAML.” Continue to label the hierarchy center independently so selecting a related resource for preview does not imply that the hierarchy was recentered.
+
+Mutation actions in the resource dialog target the resource currently displayed in the ownership YAML preview. Show that target explicitly beside the footer actions. Their projection polling remains active while the main resource list stream is paused in Ownership view, and the ownership content is non-interactive for the duration of a mutation. Deleting or losing a related preview returns the preview and action target to the center. Deleting or losing the center closes the detail dialog.

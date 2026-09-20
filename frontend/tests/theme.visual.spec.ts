@@ -30,11 +30,19 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
     .click()
 
   await page.getByRole('textbox', { name: 'Name', exact: true }).fill('pa')
-  const inspect = page.getByRole('button', { name: 'Inspect platform-api' })
+  const inspect = page.getByRole('row', { name: 'Inspect platform-api' })
   await expect(inspect).toBeVisible()
   await inspect.focus()
   await expect(inspect).toBeFocused()
-  await expect(inspect).toHaveCSS('outline-color', 'rgb(56, 189, 248)')
+  await expect(inspect.getByRole('cell').first()).toHaveCSS(
+    'border-left-color',
+    'rgb(56, 189, 248)',
+  )
+  const resourceRow = page.getByRole('row', { name: /platform-api/ })
+  expect((await resourceRow.boundingBox())!.height).toBeLessThanOrEqual(48)
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(await page.evaluate(() => window.innerWidth))
   await page.screenshot({ path: testInfo.outputPath('workspace-focus.png') })
 
   await inspect.click()
@@ -122,6 +130,14 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
     'background-color',
     'rgb(10, 14, 23)',
   )
+  await expect(
+    page.getByText('Resource manifest', { exact: true }),
+  ).toBeVisible()
+  await expect(page.getByText('Editing enabled', { exact: true })).toBeVisible()
+  await expect(page.locator('.monaco-editor .view-line').first()).toHaveCSS(
+    'font-size',
+    '15px',
+  )
   await page.screenshot({ path: testInfo.outputPath('yaml-modal.png') })
 
   await page.keyboard.press('Escape')
@@ -130,7 +146,21 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
     page.getByRole('navigation', { name: 'Resource types' }),
   ).toBeVisible()
   await expect(page.getByRole('button', { name: 'Log out' })).toBeVisible()
+  const narrowResources = page.getByRole('table', { name: 'Widget resources' })
+  const narrowResourcesViewport = narrowResources.locator('..')
+  expect(
+    await narrowResourcesViewport.evaluate(
+      (element) => element.scrollWidth > element.clientWidth,
+    ),
+  ).toBeTruthy()
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(320)
   await page.getByText('platform-api', { exact: true }).click()
+  await page.getByRole('tab', { name: 'YAML' }).click()
+  const narrowEditor = page.locator('.monaco-editor')
+  await expect(narrowEditor).toBeVisible()
+  expect((await narrowEditor.boundingBox())!.height).toBeGreaterThanOrEqual(360)
   await page.getByRole('tab', { name: 'Ownership' }).click()
   await expect(
     page.getByRole('table', { name: 'Loaded ownership hierarchy' }),

@@ -21,17 +21,22 @@ func TestMutatorUpdatesTriggersAndDeletesSelectedResource(t *testing.T) {
 		"metadata": map[string]any{"name": "demo", "namespace": "team-a", "uid": "uid-1"},
 		"spec":     map[string]any{"size": "small"},
 	}}
+	original.SetResourceVersion("1")
 	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), original)
 	mutator := NewMutator(client)
 	mutator.now = func() time.Time { return time.Date(2026, 9, 20, 12, 34, 56, 0, time.UTC) }
 	target := MutationTarget{UID: "uid-1", Name: "demo", Namespace: "team-a"}
 
-	updated := []byte("apiVersion: example.test/v1\nkind: Widget\nmetadata:\n  name: demo\n  namespace: team-a\n  uid: uid-1\nspec:\n  size: large\n")
-	if err := mutator.Update(context.Background(), &resourceType, target, updated); err != nil {
+	updated := []byte("apiVersion: example.test/v1\nkind: Widget\nmetadata:\n  name: demo\n  namespace: team-a\n  resourceVersion: \"1\"\n  uid: uid-1\nspec:\n  size: large\n")
+	if resourceVersion, err := mutator.Update(context.Background(), &resourceType, target, updated); err != nil {
 		t.Fatal(err)
+	} else if resourceVersion != "1" {
+		t.Fatalf("resource version = %q", resourceVersion)
 	}
-	if err := mutator.Trigger(context.Background(), &resourceType, target, "operator@example.test"); err != nil {
+	if triggeredAt, err := mutator.Trigger(context.Background(), &resourceType, target, "operator@example.test"); err != nil {
 		t.Fatal(err)
+	} else if triggeredAt != "2026-09-20T12:34:56Z" {
+		t.Fatalf("triggered at = %q", triggeredAt)
 	}
 	object, err := client.Resource(gvr).Namespace("team-a").Get(context.Background(), "demo", metav1.GetOptions{})
 	if err != nil {
@@ -61,11 +66,11 @@ func TestMutatorRejectsChangedIdentity(t *testing.T) {
 	mutator := NewMutator(client)
 	target := MutationTarget{UID: "uid-1", Name: "demo", Namespace: "team-a"}
 	changedName := []byte("apiVersion: example.test/v1\nkind: Widget\nmetadata:\n  name: another\n  namespace: team-a\n  uid: uid-1\n")
-	if err := mutator.Update(context.Background(), &resourceType, target, changedName); !errors.Is(err, ErrResourceIdentityChanged) {
+	if _, err := mutator.Update(context.Background(), &resourceType, target, changedName); !errors.Is(err, ErrResourceIdentityChanged) {
 		t.Fatalf("identity error = %v", err)
 	}
 	missingUID := []byte("apiVersion: example.test/v1\nkind: Widget\nmetadata:\n  name: demo\n  namespace: team-a\n")
-	if err := mutator.Update(context.Background(), &resourceType, target, missingUID); !errors.Is(err, ErrResourceIdentityChanged) {
+	if _, err := mutator.Update(context.Background(), &resourceType, target, missingUID); !errors.Is(err, ErrResourceIdentityChanged) {
 		t.Fatalf("missing UID error = %v", err)
 	}
 }

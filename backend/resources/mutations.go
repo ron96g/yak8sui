@@ -35,27 +35,30 @@ func NewMutator(client dynamic.Interface) *Mutator {
 	return &Mutator{client: client, now: time.Now}
 }
 
-func (m *Mutator) Update(ctx context.Context, resourceType *Type, target MutationTarget, contents []byte) error {
+func (m *Mutator) Update(ctx context.Context, resourceType *Type, target MutationTarget, contents []byte) (string, error) {
 	jsonContents, err := yaml.YAMLToJSON(contents)
 	if err != nil {
-		return fmt.Errorf("decode YAML: %w", err)
+		return "", fmt.Errorf("decode YAML: %w", err)
 	}
 	object := &unstructured.Unstructured{}
 	if unmarshalErr := object.UnmarshalJSON(jsonContents); unmarshalErr != nil {
-		return fmt.Errorf("decode resource: %w", unmarshalErr)
+		return "", fmt.Errorf("decode resource: %w", unmarshalErr)
 	}
 	if identityErr := validateMutationIdentity(resourceType, target, object); identityErr != nil {
-		return identityErr
+		return "", identityErr
 	}
 	live, err := m.resource(resourceType, target.Namespace).Get(ctx, target.Name, metav1.GetOptions{})
 	if err != nil {
-		return err
+		return "", err
 	}
 	if string(live.GetUID()) != target.UID {
-		return ErrResourceIdentityChanged
+		return "", ErrResourceIdentityChanged
 	}
-	_, err = m.resource(resourceType, target.Namespace).Update(ctx, object, metav1.UpdateOptions{})
-	return err
+	updated, err := m.resource(resourceType, target.Namespace).Update(ctx, object, metav1.UpdateOptions{})
+	if err != nil {
+		return "", err
+	}
+	return updated.GetResourceVersion(), nil
 }
 
 func (m *Mutator) Delete(ctx context.Context, resourceType *Type, target MutationTarget) error {
@@ -63,24 +66,28 @@ func (m *Mutator) Delete(ctx context.Context, resourceType *Type, target Mutatio
 	return m.resource(resourceType, target.Namespace).Delete(ctx, target.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
 }
 
-func (m *Mutator) Trigger(ctx context.Context, resourceType *Type, target MutationTarget, actor string) error {
+func (m *Mutator) Trigger(ctx context.Context, resourceType *Type, target MutationTarget, actor string) (string, error) {
 	resource := m.resource(resourceType, target.Namespace)
 	object, err := resource.Get(ctx, target.Name, metav1.GetOptions{})
 	if err != nil {
-		return err
+		return "", err
 	}
 	if string(object.GetUID()) != target.UID {
-		return ErrResourceIdentityChanged
+		return "", ErrResourceIdentityChanged
 	}
 	annotations := object.GetAnnotations()
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
 	annotations[TriggeredByAnnotation] = actor
-	annotations[TriggeredAtAnnotation] = m.now().UTC().Format(time.RFC3339Nano)
+	triggeredAt := m.now().UTC().Format(time.RFC3339Nano)
+	annotations[TriggeredAtAnnotation] = triggeredAt
 	object.SetAnnotations(annotations)
 	_, err = resource.Update(ctx, object, metav1.UpdateOptions{})
-	return err
+	if err != nil {
+		return "", err
+	}
+	return triggeredAt, nil
 }
 
 func (m *Mutator) resource(resourceType *Type, namespace string) dynamic.ResourceInterface {

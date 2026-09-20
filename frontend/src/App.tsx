@@ -18,6 +18,7 @@ import {
   DialogActions,
   IconButton,
   MenuItem,
+  Snackbar,
   Tab,
   Tabs,
   Table,
@@ -37,7 +38,7 @@ import ResourceWorkspace, {
   type ObservationStatus,
 } from './ResourceWorkspace'
 import OwnershipView, { type RelationshipNode } from './OwnershipView'
-import { shellBackground, technicalText } from './theme'
+import { editorInset, shellBackground, technicalText } from './theme'
 
 const YamlViewer = lazy(() => import('./YamlViewer'))
 
@@ -60,10 +61,16 @@ type ResourceCondition = {
   stale: boolean
 }
 type ResourceDetail = ResourceSummary & {
+  resourceVersion?: string
+  triggeredAt?: string
   yaml: string
   conditions: ResourceCondition[]
 }
 type ConnectionState = 'idle' | 'resynchronizing' | 'connected' | 'disconnected'
+type ActionNotification = {
+  severity: 'success' | 'error'
+  message: string
+}
 type ResourcePage = {
   items: ResourceSummary[]
   total: number
@@ -82,6 +89,23 @@ const emptyQuery: ResourceQuery = {
   page: 1,
 }
 
+const mutationTimeoutMilliseconds = 5_000
+const mutationPollMilliseconds = 200
+
+function waitForMutationPoll(signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(signal.reason)
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, mutationPollMilliseconds)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 export default function App() {
   const [loading, setLoading] = useState(true)
   const [session, setSession] = useState<Session | null>(null)
@@ -98,14 +122,19 @@ export default function App() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailTab, setDetailTab] = useState(0)
   const [detailType, setDetailType] = useState<ResourceType | null>(null)
+  const [ownershipActionTarget, setOwnershipActionTarget] =
+    useState<RelationshipNode | null>(null)
   const [yamlDraft, setYamlDraft] = useState('')
   const yamlDirty = useRef(false)
   const [mutation, setMutation] = useState<
     'update' | 'trigger' | 'delete' | null
   >(null)
+  const mutationAction = useRef<'update' | 'trigger' | 'delete' | null>(null)
   const mutationRevision = useRef(0)
+  const mutationController = useRef<AbortController | null>(null)
   const [deleteConfirmation, setDeleteConfirmation] = useState(false)
-  const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [actionNotification, setActionNotification] =
+    useState<ActionNotification | null>(null)
   const hierarchyRevision = useRef(0)
   const [connectionState, setConnectionState] =
     useState<ConnectionState>('idle')
@@ -138,12 +167,16 @@ export default function App() {
     setPageCount(0)
     setDetail(null)
     setDetailType(null)
+    setOwnershipActionTarget(null)
     setYamlDraft('')
     yamlDirty.current = false
+    mutationController.current?.abort()
+    mutationController.current = null
     mutationRevision.current += 1
+    mutationAction.current = null
     setMutation(null)
     setDeleteConfirmation(false)
-    setActionMessage(null)
+    setActionNotification(null)
     hierarchyRevision.current += 1
     setResourceType(null)
     setResourceTypes([])
@@ -443,7 +476,7 @@ export default function App() {
     setDetail(null)
     setYamlDraft('')
     yamlDirty.current = false
-    setActionMessage(null)
+    setActionNotification(null)
     setDetailLoading(true)
     setDetailTab(0)
     setDetailType(resourceType)
@@ -475,8 +508,11 @@ export default function App() {
 
   function selectDetailTab(value: number) {
     if (value === detailTab) return
-    if (value === 2) pauseResourceStreamForOwnership()
-    else if (detailTab === 2) resumeResourceStreamAfterOwnership()
+    if (value === 2) {
+      pauseResourceStreamForOwnership()
+      if (detail && detailType)
+        setOwnershipActionTarget({ ...detail, type: detailType })
+    } else if (detailTab === 2) resumeResourceStreamAfterOwnership()
     setDetailTab(value)
   }
 
@@ -502,6 +538,7 @@ export default function App() {
         return
       }
       if (response.status === 404) {
+        if (mutationAction.current === 'delete') return
         selectedUID.current = null
         setDetail(null)
         setDetailType(null)
@@ -542,12 +579,15 @@ export default function App() {
     detailRevision.current += 1
     setDetail(null)
     setDetailType(null)
+    setOwnershipActionTarget(null)
     setYamlDraft('')
     yamlDirty.current = false
+    mutationController.current?.abort()
+    mutationController.current = null
     mutationRevision.current += 1
+    mutationAction.current = null
     setMutation(null)
     setDeleteConfirmation(false)
-    setActionMessage(null)
     selectedDetailType.current = null
     setDetailLoading(false)
     resumeResourceStreamAfterOwnership()
@@ -561,13 +601,25 @@ export default function App() {
 
   async function mutateResource(action: 'update' | 'trigger' | 'delete') {
     if (!tenant || !detailType || !detail) return
+    const target =
+      detailTab === 2 && ownershipActionTarget
+        ? ownershipActionTarget
+        : { ...detail, type: detailType }
     setError(null)
-    setActionMessage(null)
+    setActionNotification(null)
+    mutationAction.current = action
     setMutation(action)
     const request = ++mutationRevision.current
     const context = contextRevision.current
-    const uid = detail.uid
-    const path = `${resourcePath(tenant, detailType)}/${encodeURIComponent(detail.uid)}`
+    const uid = target.uid
+    const submittedYAML = yamlDraft
+    const path = `${resourcePath(tenant, target.type)}/${encodeURIComponent(uid)}`
+    const controller = new AbortController()
+    mutationController.current = controller
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      mutationTimeoutMilliseconds,
+    )
     try {
       const response = await fetch(
         action === 'trigger' ? `${path}/trigger` : path,
@@ -575,9 +627,13 @@ export default function App() {
           ? {
               method: 'PUT',
               headers: { 'Content-Type': 'application/yaml' },
-              body: yamlDraft,
+              body: submittedYAML,
+              signal: controller.signal,
             }
-          : { method: action === 'delete' ? 'DELETE' : 'POST' },
+          : {
+              method: action === 'delete' ? 'DELETE' : 'POST',
+              signal: controller.signal,
+            },
       )
       if (response.status === 401) {
         clearTenantData()
@@ -591,36 +647,93 @@ export default function App() {
         }
         throw new Error(problem.error ?? `Could not ${action} the resource.`)
       }
+      const result = (action === 'delete' ? {} : await response.json()) as {
+        resourceVersion?: string
+        triggeredAt?: string
+      }
       if (
         request !== mutationRevision.current ||
-        context !== contextRevision.current ||
-        selectedUID.current !== uid
+        context !== contextRevision.current
       )
         return
-      if (action === 'delete') {
-        closeDetail()
-        return
+
+      let observedDetail: ResourceDetail | null = null
+      while (!controller.signal.aborted) {
+        const observedResponse = await fetch(path, {
+          signal: controller.signal,
+        })
+        if (action === 'delete' && observedResponse.status === 404) break
+        if (observedResponse.status === 401) {
+          clearTenantData()
+          setSession(null)
+          setError('Your session expired. Sign in again.')
+          return
+        }
+        if (!observedResponse.ok)
+          throw new Error('Could not verify the observed resource state.')
+
+        const candidate = (await observedResponse.json()) as ResourceDetail
+        const mutationObserved =
+          action === 'update'
+            ? Boolean(result.resourceVersion) &&
+              candidate.resourceVersion === result.resourceVersion
+            : candidate.triggeredAt === result.triggeredAt
+        if (action !== 'delete' && mutationObserved) {
+          observedDetail = candidate
+          break
+        }
+        await waitForMutationPoll(controller.signal)
       }
-      if (action === 'update') yamlDirty.current = false
-      setActionMessage(
-        action === 'update'
-          ? 'Update accepted. Waiting for the observed state.'
-          : 'Trigger annotations updated.',
+
+      if (controller.signal.aborted) throw controller.signal.reason
+      if (action !== 'delete' && !observedDetail)
+        throw new Error(`Could not verify the ${action} operation.`)
+      if (
+        request !== mutationRevision.current ||
+        context !== contextRevision.current
       )
+        return
+
+      if (action === 'delete') {
+        setError(null)
+        if (uid === detail.uid) closeDetail()
+        else setOwnershipActionTarget({ ...detail, type: detailType })
+      } else if (observedDetail && uid === detail.uid) {
+        setDetail(observedDetail)
+        setYamlDraft(observedDetail.yaml)
+        yamlDirty.current = false
+      }
+      setActionNotification({
+        severity: 'success',
+        message:
+          action === 'update'
+            ? `Update of ${target.name} completed and is now visible.`
+            : action === 'trigger'
+              ? `Trigger update for ${target.name} completed and is now visible.`
+              : `Delete of ${target.name} completed and is now visible.`,
+      })
     } catch (cause) {
       if (
         request !== mutationRevision.current ||
-        context !== contextRevision.current ||
-        selectedUID.current !== uid
+        context !== contextRevision.current
       )
         return
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : `Could not ${action} the resource.`,
-      )
+      setActionNotification({
+        severity: 'error',
+        message:
+          controller.signal.aborted &&
+          request === mutationRevision.current &&
+          context === contextRevision.current
+            ? `The ${action} request timed out after 5 seconds. The operation may still complete; check the observed state before retrying.`
+            : cause instanceof Error
+              ? cause.message
+              : `Could not ${action} the resource.`,
+      })
     } finally {
+      window.clearTimeout(timeout)
       if (request === mutationRevision.current) {
+        mutationController.current = null
+        mutationAction.current = null
         setMutation(null)
         setDeleteConfirmation(false)
       }
@@ -793,7 +906,10 @@ export default function App() {
         <DialogTitle id="resource-detail-title">
           {detail?.name || 'Loading resource'} — Resource details
         </DialogTitle>
-        <DialogContent>
+        <DialogContent
+          aria-busy={mutation !== null}
+          sx={mutation === null ? undefined : { pointerEvents: 'none' }}
+        >
           {observation && observation.state !== 'current' && (
             <Alert
               severity={
@@ -815,11 +931,6 @@ export default function App() {
               {detail.namespace || 'Cluster scoped'} · {detail.uid}
             </Typography>
           )}
-          {actionMessage && (
-            <Alert severity="success" sx={{ mb: 2 }}>
-              {actionMessage}
-            </Alert>
-          )}
           {detail ? (
             <>
               <Tabs
@@ -828,38 +939,77 @@ export default function App() {
                 aria-label="Resource detail views"
                 sx={{ mb: 2 }}
               >
-                <Tab label="Conditions" />
-                <Tab label="YAML" />
-                <Tab label="Ownership" />
+                <Tab label="Conditions" disabled={mutation !== null} />
+                <Tab label="YAML" disabled={mutation !== null} />
+                <Tab label="Ownership" disabled={mutation !== null} />
               </Tabs>
               {detailTab === 0 ? (
                 <ConditionsView detail={detail} />
               ) : detailTab === 1 ? (
-                <Box
-                  height="60vh"
-                  border={1}
-                  borderColor="divider"
-                  borderRadius={1}
-                  overflow="hidden"
-                >
-                  <Suspense
-                    fallback={<CircularProgress aria-label="Loading YAML" />}
+                <Stack spacing={1}>
+                  <Stack
+                    direction={{ xs: 'column', sm: 'row' }}
+                    justifyContent="space-between"
+                    alignItems={{ xs: 'flex-start', sm: 'center' }}
+                    spacing={0.5}
                   >
-                    <YamlViewer
-                      value={yamlDraft}
-                      readOnly={!tenant?.actions.includes('update')}
-                      onChange={(value) => {
-                        yamlDirty.current = value !== detail.yaml
-                        setYamlDraft(value)
-                      }}
-                    />
-                  </Suspense>
-                </Box>
+                    <Typography variant="subtitle2">
+                      Resource manifest
+                    </Typography>
+                    <Typography
+                      variant="caption"
+                      color={
+                        yamlDirty.current ? 'warning.main' : 'text.secondary'
+                      }
+                      sx={technicalText}
+                    >
+                      {tenant?.actions.includes('update')
+                        ? yamlDirty.current
+                          ? 'Unsaved changes'
+                          : 'Editing enabled'
+                        : 'Read-only'}
+                    </Typography>
+                  </Stack>
+                  <Box
+                    height={{ xs: '58vh', sm: '68vh' }}
+                    minHeight={360}
+                    border={1}
+                    borderColor="divider"
+                    borderRadius={1}
+                    overflow="hidden"
+                    boxShadow={editorInset}
+                  >
+                    <Suspense
+                      fallback={<CircularProgress aria-label="Loading YAML" />}
+                    >
+                      <YamlViewer
+                        value={yamlDraft}
+                        readOnly={
+                          mutation !== null ||
+                          !tenant?.actions.includes('update')
+                        }
+                        onChange={(value) => {
+                          yamlDirty.current = value !== detail.yaml
+                          setYamlDraft(value)
+                        }}
+                      />
+                    </Suspense>
+                  </Box>
+                </Stack>
               ) : detailType && tenant ? (
                 <OwnershipView
                   tenantID={tenant.id}
                   revision={hierarchyRevision.current}
+                  busy={mutation !== null}
                   center={{ ...detail, type: detailType }}
+                  preview={
+                    ownershipActionTarget ?? { ...detail, type: detailType }
+                  }
+                  onPreviewChange={setOwnershipActionTarget}
+                  onCenterRevoked={() => {
+                    closeDetail()
+                    setError('The selected resource is no longer visible.')
+                  }}
                   onExplore={(node: RelationshipNode) => {
                     selectedUID.current = node.uid
                     setDetailType(node.type)
@@ -884,22 +1034,36 @@ export default function App() {
           )}
         </DialogContent>
         <DialogActions>
+          {detail && detailTab === 2 && ownershipActionTarget && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ mr: 'auto', ...technicalText }}
+            >
+              Actions target: {ownershipActionTarget.type.kind}{' '}
+              {ownershipActionTarget.name}
+            </Typography>
+          )}
           {detail && detailTab === 1 && tenant?.actions.includes('update') && (
             <Button
               startIcon={<SaveOutlinedIcon />}
+              loading={mutation === 'update'}
+              loadingPosition="start"
               disabled={mutation !== null || !yamlDirty.current}
               onClick={() => void mutateResource('update')}
             >
-              Update
+              {mutation === 'update' ? 'Updating…' : 'Update'}
             </Button>
           )}
           {detail && tenant?.actions.includes('trigger') && (
             <Button
               startIcon={<PlayArrowIcon />}
+              loading={mutation === 'trigger'}
+              loadingPosition="start"
               disabled={mutation !== null}
               onClick={() => void mutateResource('trigger')}
             >
-              Trigger update
+              {mutation === 'trigger' ? 'Triggering…' : 'Trigger update'}
             </Button>
           )}
           {detail && tenant?.actions.includes('delete') && (
@@ -925,8 +1089,11 @@ export default function App() {
         <DialogTitle id="delete-resource-title">Delete resource?</DialogTitle>
         <DialogContent>
           <Typography>
-            Delete {detailType?.kind} {detail?.name}? This action cannot be
-            undone.
+            Delete{' '}
+            {detailTab === 2 && ownershipActionTarget
+              ? `${ownershipActionTarget.type.kind} ${ownershipActionTarget.name}`
+              : `${detailType?.kind} ${detail?.name}`}
+            ? This action cannot be undone.
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -939,13 +1106,32 @@ export default function App() {
           <Button
             color="error"
             variant="contained"
+            loading={mutation === 'delete'}
+            loadingPosition="start"
             disabled={mutation !== null}
             onClick={() => void mutateResource('delete')}
           >
-            Delete resource
+            {mutation === 'delete' ? 'Deleting…' : 'Delete resource'}
           </Button>
         </DialogActions>
       </Dialog>
+      <Snackbar
+        open={actionNotification !== null}
+        autoHideDuration={6_000}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        onClose={(_, reason) => {
+          if (reason !== 'clickaway') setActionNotification(null)
+        }}
+      >
+        <Alert
+          severity={actionNotification?.severity ?? 'success'}
+          variant="filled"
+          onClose={() => setActionNotification(null)}
+          sx={{ width: '100%' }}
+        >
+          {actionNotification?.message}
+        </Alert>
+      </Snackbar>
     </Box>
   )
 }

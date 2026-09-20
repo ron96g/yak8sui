@@ -627,27 +627,43 @@ func TestPublicHTTPResourceMutationsAreAuthorizedAndObserved(t *testing.T) {
 	env := newEnvironment(t, time.Hour)
 	env.login(t, "allowed")
 	item := widget("mutation-uid", "mutable", "platform", "Ready", 1)
+	item.SetResourceVersion("1")
 	if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Create(t.Context(), item, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	waitForItems(t, &env, "platform", "mutation-uid")
 	path := env.app.URL + widgetPath("platform") + "/mutation-uid"
 
-	updateYAML := "apiVersion: widgets.example.test/v1\nkind: Widget\nmetadata:\n  name: mutable\n  namespace: team-a\n  uid: mutation-uid\n  labels:\n    tenant: platform\n    inspect: \"true\"\nspec:\n  size: updated\n"
+	updateYAML := "apiVersion: widgets.example.test/v1\nkind: Widget\nmetadata:\n  name: mutable\n  namespace: team-a\n  resourceVersion: \"1\"\n  uid: mutation-uid\n  labels:\n    tenant: platform\n    inspect: \"true\"\nspec:\n  size: updated\n"
 	response := mutate(t, env.client, http.MethodPut, path, updateYAML, env.app.URL)
-	if response.StatusCode != http.StatusNoContent {
+	if response.StatusCode != http.StatusOK {
 		t.Fatalf("update status %d: %s", response.StatusCode, body(response))
+	}
+	var updateResult struct {
+		ResourceVersion string `json:"resourceVersion"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&updateResult); err != nil {
+		t.Fatalf("update response = %#v, error = %v", updateResult, err)
+	}
+	if updateResult.ResourceVersion != "1" {
+		t.Fatalf("update resource version = %q", updateResult.ResourceVersion)
 	}
 	response.Body.Close()
 	waitForYAML(t, &env, "mutation-uid", "size: updated")
 
 	response = mutate(t, env.client, http.MethodPost, path+"/trigger", "", env.app.URL)
-	if response.StatusCode != http.StatusNoContent {
+	if response.StatusCode != http.StatusOK {
 		t.Fatalf("trigger status %d: %s", response.StatusCode, body(response))
+	}
+	var triggerResult struct {
+		TriggeredAt string `json:"triggeredAt"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&triggerResult); err != nil || triggerResult.TriggeredAt == "" {
+		t.Fatalf("trigger response = %#v, error = %v", triggerResult, err)
 	}
 	response.Body.Close()
 	waitForYAML(t, &env, "mutation-uid", "triggered-by: allowed@example.test")
-	waitForYAML(t, &env, "mutation-uid", "triggered-at:")
+	waitForYAML(t, &env, "mutation-uid", "triggered-at: \""+triggerResult.TriggeredAt+"\"")
 
 	response = mutate(t, env.client, http.MethodDelete, path, "", env.app.URL)
 	if response.StatusCode != http.StatusNoContent {
@@ -724,7 +740,7 @@ func TestPublicHTTPSupervisorCanTriggerButCannotUpdateOrDelete(t *testing.T) {
 	waitForItems(t, &env, "platform", "supervised-uid")
 	path := env.app.URL + widgetPath("platform") + "/supervised-uid"
 	response := mutate(t, env.client, http.MethodPost, path+"/trigger", "", env.app.URL)
-	if response.StatusCode != http.StatusNoContent {
+	if response.StatusCode != http.StatusOK {
 		t.Fatalf("trigger status %d: %s", response.StatusCode, body(response))
 	}
 	response.Body.Close()

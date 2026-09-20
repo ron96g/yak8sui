@@ -22,7 +22,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
-import { lazy, Suspense, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { technicalText } from './theme'
 import { useResourcePreview } from './useResourcePreview'
 import {
@@ -38,7 +38,11 @@ export type { RelationshipNode } from './useOwnershipHierarchy'
 type Props = {
   tenantID: string
   center: RelationshipNode
+  preview: RelationshipNode
   revision: number
+  busy?: boolean
+  onPreviewChange: (node: RelationshipNode) => void
+  onCenterRevoked: () => void
   onExplore: (node: RelationshipNode) => void
 }
 
@@ -46,20 +50,11 @@ const YamlViewer = lazy(() => import('./YamlViewer'))
 
 export default function OwnershipView(props: Props) {
   const contextKey = `${props.tenantID}/${nodeIdentity(props.center)}/${props.revision}`
-  return (
-    <OwnershipPresentation
-      key={contextKey}
-      {...props}
-      initialPreview={props.center}
-    />
-  )
+  return <OwnershipPresentation key={contextKey} {...props} />
 }
 
-function OwnershipPresentation(
-  props: Props & { initialPreview: RelationshipNode },
-) {
+function OwnershipPresentation(props: Props) {
   const [presentation, setPresentation] = useState<'graph' | 'table'>('table')
-  const [preview, setPreview] = useState(props.initialPreview)
   const hierarchy = useOwnershipHierarchy(
     props.tenantID,
     props.center,
@@ -68,10 +63,24 @@ function OwnershipPresentation(
   const previewState = useResourcePreview(
     props.tenantID,
     nodeIdentity(props.center),
-    preview,
+    props.preview,
   )
+  const previewIdentity = nodeIdentity(props.preview)
+  useEffect(() => {
+    if (props.busy || previewState.status !== 'revoked') return
+    if (previewIdentity === nodeIdentity(props.center)) props.onCenterRevoked()
+    else props.onPreviewChange(props.center)
+  }, [previewIdentity, previewState.status, props])
+  const inspect = (node: RelationshipNode) => {
+    props.onPreviewChange(node)
+  }
   return (
-    <Stack spacing={2} minWidth={0}>
+    <Stack
+      spacing={2}
+      minWidth={0}
+      inert={props.busy ? true : undefined}
+      aria-busy={props.busy || undefined}
+    >
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
         <ToggleButtonGroup
           size="small"
@@ -111,14 +120,16 @@ function OwnershipPresentation(
           {presentation === 'graph' ? (
             <GraphOccurrence
               occurrence={hierarchy.root}
-              onInspect={setPreview}
+              previewIdentity={previewIdentity}
+              onInspect={inspect}
               onToggle={hierarchy.toggle}
               root
             />
           ) : (
             <OwnershipTable
               rows={hierarchy.rows}
-              onInspect={setPreview}
+              previewIdentity={previewIdentity}
+              onInspect={inspect}
               onToggle={hierarchy.toggle}
             />
           )}
@@ -138,20 +149,20 @@ function OwnershipPresentation(
           >
             <Box minWidth={0}>
               <Typography variant="subtitle1" noWrap>
-                {preview.name}
+                {props.preview.name}
               </Typography>
               <Typography
                 variant="caption"
                 color="text.secondary"
                 sx={technicalText}
               >
-                UID: {preview.uid}
+                UID: {props.preview.uid}
               </Typography>
             </Box>
             <Button
               size="small"
               variant="outlined"
-              onClick={() => props.onExplore(preview)}
+              onClick={() => props.onExplore(props.preview)}
             >
               Explore from this resource
             </Button>
@@ -198,11 +209,13 @@ function OwnershipPresentation(
 
 function GraphOccurrence({
   occurrence,
+  previewIdentity,
   onInspect,
   onToggle,
   root = false,
 }: {
   occurrence: HierarchyOccurrence
+  previewIdentity: string
   onInspect: (node: RelationshipNode) => void
   onToggle: (key: string) => void
   root?: boolean
@@ -227,6 +240,7 @@ function GraphOccurrence({
         <GraphList
           nodes={parents}
           anchor={node}
+          previewIdentity={previewIdentity}
           onInspect={onInspect}
           onToggle={onToggle}
         />
@@ -234,6 +248,7 @@ function GraphOccurrence({
       <ResourceCard
         occurrence={occurrence}
         root={root}
+        previewed={nodeIdentity(node) === previewIdentity}
         onInspect={onInspect}
         onToggle={onToggle}
       />
@@ -259,6 +274,7 @@ function GraphOccurrence({
         <GraphList
           nodes={children}
           anchor={node}
+          previewIdentity={previewIdentity}
           onInspect={onInspect}
           onToggle={onToggle}
         />
@@ -270,11 +286,13 @@ function GraphOccurrence({
 function ResourceCard({
   occurrence,
   root,
+  previewed,
   onInspect,
   onToggle,
 }: {
   occurrence: HierarchyOccurrence
   root: boolean
+  previewed: boolean
   onInspect: (node: RelationshipNode) => void
   onToggle: (key: string) => void
 }) {
@@ -287,11 +305,14 @@ function ResourceCard({
         py: 0.5,
         width: 260,
         maxWidth: '100%',
-        borderColor: root ? 'primary.main' : 'divider',
-        borderWidth: root ? 2 : 1,
+        borderColor: previewed ? 'primary.main' : 'divider',
+        borderWidth: previewed ? 2 : 1,
+        backgroundColor: previewed ? 'action.selected' : undefined,
+        boxShadow: previewed ? 3 : undefined,
       }}
       role="group"
       aria-label={`${root ? 'Selected resource' : 'Resource'} ${node.name}`}
+      aria-current={previewed ? 'true' : undefined}
     >
       <Stack direction="row" gap={0.5} alignItems="center">
         <Box flex={1} minWidth={0}>
@@ -342,7 +363,8 @@ function ResourceCard({
               sx={technicalText}
             >
               {node.type.kind}
-              {root ? ' · Selected' : ''}
+              {root ? ' · Center' : ''}
+              {previewed ? ' · Displayed in YAML' : ''}
             </Typography>
           </Tooltip>
         </Box>
@@ -404,11 +426,13 @@ function BranchButton({
 function GraphList({
   nodes,
   anchor,
+  previewIdentity,
   onInspect,
   onToggle,
 }: {
   nodes: HierarchyOccurrence[]
   anchor: RelationshipNode
+  previewIdentity: string
   onInspect: (node: RelationshipNode) => void
   onToggle: (key: string) => void
 }) {
@@ -447,6 +471,7 @@ function GraphList({
               {direction === 'child' && edge}
               <GraphOccurrence
                 occurrence={occurrence}
+                previewIdentity={previewIdentity}
                 onInspect={onInspect}
                 onToggle={onToggle}
               />
@@ -461,10 +486,12 @@ function GraphList({
 
 function OwnershipTable({
   rows,
+  previewIdentity,
   onInspect,
   onToggle,
 }: {
   rows: HierarchyOccurrence[]
+  previewIdentity: string
   onInspect: (node: RelationshipNode) => void
   onToggle: (key: string) => void
 }) {
@@ -488,6 +515,7 @@ function OwnershipTable({
             <TableOccurrence
               key={occurrence.key}
               occurrence={occurrence}
+              previewed={nodeIdentity(occurrence.node) === previewIdentity}
               onInspect={onInspect}
               onToggle={onToggle}
             />
@@ -500,10 +528,12 @@ function OwnershipTable({
 
 function TableOccurrence({
   occurrence,
+  previewed,
   onInspect,
   onToggle,
 }: {
   occurrence: HierarchyOccurrence
+  previewed: boolean
   onInspect: (node: RelationshipNode) => void
   onToggle: (key: string) => void
 }) {
@@ -518,7 +548,7 @@ function TableOccurrence({
     <TableRow
       data-node-identity={nodeIdentity(node)}
       data-depth={occurrence.depth}
-      aria-selected={direction === 'center'}
+      aria-selected={previewed}
       tabIndex={0}
       onClick={() => onInspect(node)}
       onKeyDown={(event) => {
@@ -534,7 +564,7 @@ function TableOccurrence({
             theme.transitions.create('background-color', {
               duration: theme.transitions.duration.shortest,
             }),
-          ...(direction === 'center'
+          ...(previewed
             ? {
                 backgroundColor: 'action.selected',
                 borderBlockColor: 'primary.main',
@@ -546,16 +576,18 @@ function TableOccurrence({
           outlineColor: 'primary.main',
           outlineOffset: -2,
         },
-        ...(direction === 'center'
+        ...(previewed
           ? {
               '& > :first-of-type': {
-                borderLeft: 2,
+                borderLeft: 4,
                 borderLeftColor: 'primary.main',
               },
               '& > :last-child': {
                 borderRight: 2,
                 borderRightColor: 'primary.main',
               },
+              boxShadow: (theme) =>
+                `inset 0 1px 0 ${theme.palette.primary.main}, inset 0 -1px 0 ${theme.palette.primary.main}`,
             }
           : {}),
         '&:hover > *': {
@@ -577,7 +609,8 @@ function TableOccurrence({
           <Box minWidth={0}>
             <Typography
               className="ownership-resource-name"
-              fontWeight={direction === 'center' ? 600 : 400}
+              fontWeight={previewed ? 700 : direction === 'center' ? 600 : 400}
+              color={previewed ? 'primary.main' : 'text.primary'}
             >
               {node.name}
             </Typography>
@@ -587,6 +620,7 @@ function TableOccurrence({
               color="text.secondary"
             >
               {directionLabel}
+              {previewed ? ' · Displayed in YAML' : ''}
             </Typography>
             <Typography variant="caption" display="block" sx={technicalText}>
               UID: {node.uid}

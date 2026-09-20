@@ -22,7 +22,7 @@ import {
   Typography,
 } from '@mui/material'
 import { useEffect, useRef, useState } from 'react'
-import { space, technicalText } from './theme'
+import { space, subtleStripe, technicalText } from './theme'
 
 export type ResourceType = {
   group: string
@@ -294,11 +294,18 @@ export default function ResourceWorkspace({
           <Typography id="filters-title" variant="subtitle2" mb={2}>
             Filters
           </Typography>
-          <Stack
-            direction={{ xs: 'column', lg: 'row' }}
-            spacing={2}
-            useFlexGap
-            flexWrap="wrap"
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: {
+                xs: 'minmax(0, 1fr)',
+                sm: 'minmax(0, 1fr) 120px',
+                lg: 'minmax(180px, 1fr) 110px minmax(180px, 1fr) 110px',
+                xl: 'minmax(180px, .8fr) 110px minmax(180px, .8fr) 110px minmax(260px, 1.25fr) 130px',
+              },
+              gap: 1.5,
+              alignItems: 'start',
+            }}
           >
             <TextField
               label="Name"
@@ -311,7 +318,6 @@ export default function ResourceWorkspace({
               error={draftKey === queryKey && Boolean(queryErrors.name)}
               helperText={draftKey === queryKey ? queryErrors.name : undefined}
               disabled={!resourceType?.available}
-              fullWidth
               size="small"
             />
             <TextField
@@ -342,7 +348,6 @@ export default function ResourceWorkspace({
               disabled={
                 !resourceType?.available || resourceType.scope !== 'Namespaced'
               }
-              fullWidth
               size="small"
               helperText={
                 (draftKey === queryKey ? queryErrors.namespace : undefined) ??
@@ -381,9 +386,8 @@ export default function ResourceWorkspace({
                 draftKey === queryKey ? queryErrors.jsonPath : undefined
               }
               disabled={!resourceType?.available}
-              fullWidth
               size="small"
-              sx={{ minWidth: { sm: 280 }, flexBasis: { lg: 320 } }}
+              sx={{ gridColumn: { sm: '1 / 2', lg: '1 / span 3', xl: 'auto' } }}
             />
             <TextField
               select
@@ -425,9 +429,10 @@ export default function ResourceWorkspace({
               disabled={
                 !resourceType?.available || draft.jsonComparison !== 'equals'
               }
-              fullWidth
               size="small"
-              sx={{ minWidth: { sm: 260 }, flexBasis: { lg: 300 } }}
+              sx={{
+                gridColumn: { sm: '1 / 2', lg: '1 / span 3', xl: '1 / span 2' },
+              }}
             />
             <Button
               onClick={() =>
@@ -443,10 +448,15 @@ export default function ResourceWorkspace({
                   draft.jsonComparison === 'exists' &&
                   !draft.jsonValue)
               }
+              sx={{
+                justifySelf: 'start',
+                alignSelf: 'center',
+                gridColumn: { lg: '4', xl: 'auto' },
+              }}
             >
               Clear JSON filter
             </Button>
-          </Stack>
+          </Box>
           <Typography
             variant="caption"
             color="text.secondary"
@@ -465,18 +475,22 @@ export default function ResourceWorkspace({
             Loading resources…
           </Alert>
         ) : (
-          <TableContainer component={Paper} variant="outlined">
+          <TableContainer
+            component={Paper}
+            variant="outlined"
+            sx={{ overflowX: 'auto' }}
+          >
             <Table
               size="small"
               aria-label={`${resourceType?.kind || 'Configured'} resources`}
+              sx={{ minWidth: 700, tableLayout: 'fixed' }}
             >
               <TableHead>
                 <TableRow>
-                  <TableCell>Status (condition)</TableCell>
+                  <TableCell sx={{ width: 220 }}>Status</TableCell>
                   <TableCell>Name</TableCell>
-                  <TableCell>Namespace</TableCell>
-                  <TableCell>Created at</TableCell>
-                  <TableCell align="right">Actions</TableCell>
+                  <TableCell sx={{ width: 180 }}>Namespace</TableCell>
+                  <TableCell sx={{ width: 190 }}>Created at</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -484,51 +498,62 @@ export default function ResourceWorkspace({
                   <TableRow
                     hover
                     key={item.uid}
+                    tabIndex={0}
+                    aria-label={`Inspect ${item.name}`}
                     onClick={() => onOpen(item)}
-                    sx={{ cursor: 'pointer' }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onOpen(item)
+                      }
+                    }}
+                    sx={{
+                      cursor: 'pointer',
+                      '&:nth-of-type(even)': {
+                        backgroundColor: subtleStripe,
+                      },
+                      '&:focus-visible > *': {
+                        boxShadow: `inset 0 2px ${space.primary}, inset 0 -2px ${space.primary}`,
+                      },
+                      '&:focus-visible > :first-of-type': {
+                        borderLeft: `2px solid ${space.primary}`,
+                      },
+                      '&:focus-visible > :last-child': {
+                        borderRight: `2px solid ${space.primary}`,
+                      },
+                    }}
                   >
-                    <TableCell>
+                    <TableCell sx={{ py: 0.75 }}>
                       <HealthChip health={item.health} />
                     </TableCell>
-                    <TableCell>
-                      <Button
-                        size="small"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onOpen(item)
+                    <TableCell sx={{ py: 0.5 }}>
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          ...technicalText,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
                         }}
-                        sx={{ ...technicalText, textAlign: 'left' }}
                       >
                         {item.name}
-                      </Button>
+                      </Typography>
                     </TableCell>
-                    <TableCell sx={technicalText}>
+                    <TableCell sx={{ ...technicalText, py: 0.75 }}>
                       {item.namespace || 'Cluster scoped'}
                     </TableCell>
-                    <TableCell sx={technicalText}>
+                    <TableCell sx={{ ...technicalText, py: 0.75 }}>
                       {item.createdAt ? (
                         <time dateTime={item.createdAt}>{item.createdAt}</time>
                       ) : (
                         'Not reported'
                       )}
                     </TableCell>
-                    <TableCell align="right">
-                      <Button
-                        size="small"
-                        aria-label={`Inspect ${item.name}`}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onOpen(item)
-                        }}
-                      >
-                        Inspect
-                      </Button>
-                    </TableCell>
                   </TableRow>
                 ))}
                 {resources.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={5}>
+                    <TableCell colSpan={4}>
                       {query.name || query.namespace || query.jsonPath
                         ? 'No resources match these filters.'
                         : 'No resources are visible for this tenant.'}

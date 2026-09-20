@@ -242,3 +242,6 @@ export const technicalText = {
   fontVariantNumeric: 'tabular-nums',
   overflowWrap: 'anywhere',
 } as const
+
+export const subtleStripe = alpha(space.text, 0.018)
+export const editorInset = `inset 0 1px 0 ${alpha(space.text, 0.03)}`

@@ -361,7 +361,12 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     .poll(() => relationshipStreamRequests.length)
     .toBeGreaterThanOrEqual(5)
   await expect(runtimeRow).toHaveCSS('cursor', 'pointer')
-  await runtimeRow.click()
+  await runtimeRow.getByText('platform-runtime', { exact: true }).click()
+  await expect(runtimeRow).toHaveAttribute('aria-selected', 'true')
+  await expect(runtimeRow).toContainText('Displayed in YAML')
+  await expect(
+    hierarchyTable.getByRole('row', { name: /platform-api.*Selected center/ }),
+  ).toHaveAttribute('aria-selected', 'false')
   await expect(
     ownershipDialog
       .getByRole('region', { name: 'Ownership YAML preview' })
@@ -381,6 +386,9 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
       .getByRole('group', { name: 'Resource platform-runtime' })
       .getByLabel('Health: Unknown'),
   ).toBeVisible()
+  await expect(
+    ownershipDialog.getByRole('group', { name: 'Resource platform-runtime' }),
+  ).toHaveAttribute('aria-current', 'true')
   await expect(
     ownershipDialog.getByRole('group', {
       name: 'platform-settings owns platform-api',
@@ -480,6 +488,13 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     .getByRole('dialog')
     .getByRole('group', { name: 'Resource platform-api', exact: true })
   await expect(relatedPlatformAPI).toBeVisible({ timeout: 10_000 })
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Preview platform-api', exact: true })
+    .click()
+  await expect(
+    page.getByText('Actions target: Widget platform-api'),
+  ).toBeVisible()
   const labelJoinedConfig = page.getByRole('dialog').getByRole('group', {
     name: 'platform-settings owns platform-feature-flags',
     exact: true,
@@ -522,6 +537,32 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   )
   expect(ownershipRestore.ok()).toBeTruthy()
   await expect(relatedPlatformAPI).toBeVisible({ timeout: 10_000 })
+  let releaseOwnershipTrigger: (() => void) | undefined
+  const ownershipTriggerCanContinue = new Promise<void>((resolve) => {
+    releaseOwnershipTrigger = resolve
+  })
+  await page.route('**/trigger', async (route) => {
+    await ownershipTriggerCanContinue
+    await route.continue()
+  })
+  const ownershipTriggerClick = page
+    .getByRole('button', { name: 'Trigger update' })
+    .click()
+  await expect(
+    page.getByRole('button', { name: 'Triggering…' }).getByRole('progressbar'),
+  ).toBeVisible()
+  await expect(page.getByRole('dialog').locator('[inert]')).toHaveAttribute(
+    'inert',
+    '',
+  )
+  releaseOwnershipTrigger?.()
+  await ownershipTriggerClick
+  await expect(
+    page.getByText(
+      'Trigger update for platform-api completed and is now visible.',
+    ),
+  ).toBeVisible()
+  await page.unroute('**/trigger')
   await page
     .getByRole('dialog')
     .getByRole('button', { name: 'Preview platform-api', exact: true })
@@ -568,6 +609,52 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     page.getByRole('button', { name: 'Trigger update' }),
   ).toBeVisible()
   await expect(page.getByRole('button', { name: 'Delete' })).toBeVisible()
+  let triggerAttempt = 0
+  let releaseTrigger: (() => void) | undefined
+  const triggerCanContinue = new Promise<void>((resolve) => {
+    releaseTrigger = resolve
+  })
+  await page.route('**/trigger', async (route) => {
+    triggerAttempt += 1
+    if (triggerAttempt === 1) {
+      await triggerCanContinue
+      await route.continue()
+      return
+    }
+    if (triggerAttempt === 2) {
+      await route.fulfill({
+        status: 422,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'The controller rejected the trigger.' }),
+      })
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5_500))
+    await route.fulfill({ status: 204 }).catch(() => undefined)
+  })
+  const trigger = page.getByRole('button', { name: 'Trigger update' })
+  const triggerClick = trigger.click()
+  const triggering = page.getByRole('button', { name: 'Triggering…' })
+  await expect(triggering.getByRole('progressbar')).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Conditions' })).toBeDisabled()
+  releaseTrigger?.()
+  await triggerClick
+  await expect(
+    page.getByText(
+      'Trigger update for platform-api completed and is now visible.',
+    ),
+  ).toBeVisible()
+  await trigger.click()
+  await expect(
+    page.getByText('The controller rejected the trigger.'),
+  ).toBeVisible()
+  await trigger.click()
+  await expect(
+    page.getByText(
+      'The trigger request timed out after 5 seconds. The operation may still complete; check the observed state before retrying.',
+    ),
+  ).toBeVisible({ timeout: 6_000 })
+  await page.unroute('**/trigger')
   await expect(page.locator('.view-lines')).toContainText('generation: 5')
   expect(eventRequests).toHaveLength(0)
   await page.keyboard.press('Escape')
@@ -598,7 +685,24 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   await expect(unhealthyIndicator).toHaveCSS('color', 'rgb(248, 113, 113)')
   await expect(unhealthyIndicator).toHaveAttribute('data-health-icon', 'error')
 
-  await page.getByRole('button', { name: 'Close', exact: true }).click()
+  await page.route('**/api/v1/tenants/**/resources/**', async (route) => {
+    if (route.request().method() !== 'DELETE') {
+      await route.continue()
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    await route.continue()
+  })
+  await page.getByRole('button', { name: 'Delete', exact: true }).click()
+  await page.getByRole('button', { name: 'Delete resource' }).click()
+  await expect(
+    page.getByRole('button', { name: 'Deleting…' }).getByRole('progressbar'),
+  ).toBeVisible()
+  await expect(
+    page.getByText('Delete of payments-worker completed and is now visible.'),
+  ).toBeVisible()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await page.unroute('**/api/v1/tenants/**/resources/**')
   await page.getByRole('button', { name: 'Log out' }).click()
   await expect(
     page.getByRole('link', { name: 'Sign in with OIDC' }),

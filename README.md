@@ -41,6 +41,9 @@ including mode changes; new filters return to page one. In a resource's YAML tab
 edit and choose **Update** to replace it with the current editor state, choose
 **Trigger update** to set `triggered-by` and `triggered-at` annotations, or choose
 **Delete** and confirm to remove it. The live observer reports the resulting state.
+The filter controls use a compact responsive grid and the resource table keeps
+stable, scannable columns; the YAML editor provides a taller, more legible
+manifest workspace while keeping long lines horizontally scrollable.
 JSONPath edits, Exists/Equals changes, and typed JSON values use the same automatic
 search. Examples include `$.status.conditions` (present, including null),
 `$.spec.replicas` Equals `3`, and `$.status.conditions[*].type` Equals `"Ready"`.

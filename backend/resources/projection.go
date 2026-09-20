@@ -84,10 +84,12 @@ type Summary struct {
 }
 
 type Detail struct {
-	UID       string `json:"uid"`
-	Name      string `json:"name"`
-	Namespace string `json:"namespace,omitempty"`
-	YAML      string `json:"yaml"`
+	UID             string `json:"uid"`
+	Name            string `json:"name"`
+	Namespace       string `json:"namespace,omitempty"`
+	ResourceVersion string `json:"resourceVersion,omitempty"`
+	TriggeredAt     string `json:"triggeredAt,omitempty"`
+	YAML            string `json:"yaml"`
 	Presentation
 }
 
@@ -630,6 +632,17 @@ WHERE m.tenant_id=? AND m.type_key=? AND m.uid=?`, tenantID, typeKey, uid).Scan(
 	if !json.Valid(contents) {
 		return Detail{}, errors.New("stored resource contents are invalid JSON")
 	}
+	var metadata struct {
+		Metadata struct {
+			ResourceVersion string            `json:"resourceVersion"`
+			Annotations     map[string]string `json:"annotations"`
+		} `json:"metadata"`
+	}
+	if unmarshalErr := json.Unmarshal(contents, &metadata); unmarshalErr != nil {
+		return Detail{}, fmt.Errorf("read resource metadata: %w", unmarshalErr)
+	}
+	detail.ResourceVersion = metadata.Metadata.ResourceVersion
+	detail.TriggeredAt = metadata.Metadata.Annotations[TriggeredAtAnnotation]
 	yamlContents, err := yaml.JSONToYAML(contents)
 	if err != nil {
 		return Detail{}, fmt.Errorf("render resource YAML: %w", err)

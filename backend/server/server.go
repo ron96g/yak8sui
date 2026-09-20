@@ -515,11 +515,12 @@ func (s *Server) updateResource(w http.ResponseWriter, r *http.Request, tenant *
 		writeError(w, http.StatusBadRequest, "resource YAML is required")
 		return
 	}
-	if err := s.mutator.Update(r.Context(), &resourceType, target, contents); err != nil {
+	resourceVersion, err := s.mutator.Update(r.Context(), &resourceType, target, contents)
+	if err != nil {
 		s.writeMutationError(w, "update", err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]string{"resourceVersion": resourceVersion})
 }
 
 func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig) {
@@ -551,11 +552,12 @@ func (s *Server) triggerResource(w http.ResponseWriter, r *http.Request, tenant 
 	if actor == "" {
 		actor = session.Identity.Subject
 	}
-	if err := s.mutator.Trigger(r.Context(), &resourceType, target, actor); err != nil {
+	triggeredAt, err := s.mutator.Trigger(r.Context(), &resourceType, target, actor)
+	if err != nil {
 		s.writeMutationError(w, "trigger", err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]string{"triggeredAt": triggeredAt})
 }
 
 func (s *Server) mutationTarget(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig, action string) (resources.Type, resources.MutationTarget, bool) {
