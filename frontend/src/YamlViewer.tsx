@@ -4,11 +4,20 @@ import { fonts, space } from './theme'
 
 loader.config({ monaco })
 
-export default function YamlViewer({ value }: { value: string }) {
+export default function YamlViewer({
+  value,
+  readOnly = true,
+  onChange,
+}: {
+  value: string
+  readOnly?: boolean
+  onChange?: (value: string) => void
+}) {
   return (
     <Editor
       language="yaml"
       value={value}
+      onChange={(next) => onChange?.(next ?? '')}
       theme="yak8sui-deep-space"
       beforeMount={(editor) => {
         editor.editor.defineTheme('yak8sui-deep-space', {
@@ -36,8 +45,8 @@ export default function YamlViewer({ value }: { value: string }) {
         })
       }}
       options={{
-        readOnly: true,
-        domReadOnly: true,
+        readOnly,
+        domReadOnly: readOnly,
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
         fontFamily: fonts.technical,

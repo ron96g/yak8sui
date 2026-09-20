@@ -67,7 +67,7 @@ func newEnvironmentWithFieldPath(t *testing.T, ttl time.Duration, fieldPath stri
 
 func newEnvironmentConfigured(t *testing.T, ttl time.Duration, configure func(*config.Config)) environment {
 	t.Helper()
-	users := map[string]testidp.User{"allowed": {Subject: "1", Name: "Allowed User", Email: "allowed@example.test", Groups: []string{"platform-admins"}}, "denied": {Subject: "2", Name: "Denied User", Groups: []string{"unrelated"}}, "payments": {Subject: "3", Name: "Payments User", Groups: []string{"payments-viewers"}}}
+	users := map[string]testidp.User{"allowed": {Subject: "1", Name: "Allowed User", Email: "allowed@example.test", Groups: []string{"platform-admins"}}, "denied": {Subject: "2", Name: "Denied User", Groups: []string{"unrelated"}}, "payments": {Subject: "3", Name: "Payments User", Groups: []string{"payments-viewers"}}, "supervisor": {Subject: "4", Name: "Supervisor User", Groups: []string{"platform-supervisors"}}}
 	provider, err := testidp.New("", users, "allowed")
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func newEnvironmentConfigured(t *testing.T, ttl time.Duration, configure func(*c
 		{Parent: config.RelationshipType{Group: "", Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "widgets.example.test", Kind: "Widget"}},
 		{Parent: config.RelationshipType{Group: "policies.example.test", Kind: "ClusterPolicy"}, Child: config.RelationshipType{Group: "widgets.example.test", Kind: "Widget"}, Resolver: "labelJoin", LabelJoin: &config.LabelJoinConfig{Labels: []config.LabelJoinMapping{{ParentLabel: "owner", ChildLabel: "policy"}, {ParentLabel: "scope", ChildLabel: "policy-scope"}}}},
 		{Parent: config.RelationshipType{Group: "policies.example.test", Kind: "ClusterPolicy"}, Child: config.RelationshipType{Group: "", Kind: "ConfigMap"}, Resolver: "fieldReference", FieldReference: &config.FieldReferenceConfig{Path: "$.spec.policyRef"}},
-	}}, Tenants: []config.TenantConfig{{ID: "platform", Name: "Platform", Groups: []string{"platform-admins"}, LabelSelector: "tenant in (platform,shared)"}, {ID: "payments", Name: "Payments", Groups: []string{"payments-viewers", "platform-admins"}, LabelSelector: "tenant in (payments,shared)"}}}
+	}}, Tenants: []config.TenantConfig{{ID: "platform", Name: "Platform", SupervisorGroups: []string{"platform-supervisors"}, AdminGroups: []string{"platform-admins"}, LabelSelector: "tenant in (platform,shared)"}, {ID: "payments", Name: "Payments", Groups: []string{"payments-viewers"}, AdminGroups: []string{"platform-admins"}, LabelSelector: "tenant in (payments,shared)"}}}
 	if configure != nil {
 		configure(&cfg)
 	}
@@ -116,7 +116,7 @@ func newEnvironmentConfigured(t *testing.T, ttl time.Duration, configure func(*c
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	go func() { _ = observation.Run(ctx) }()
-	app.Config.Handler = appserver.New(&cfg, oidc, auth.NewSessions(ttl), store, observation.Catalog()).Handler()
+	app.Config.Handler = appserver.New(&cfg, oidc, auth.NewSessions(ttl), store, observation.Catalog(), observation.Mutator()).Handler()
 	app.Start()
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar}
@@ -623,6 +623,120 @@ func TestPublicHTTPAuthorizationAndTenantSwitching(t *testing.T) {
 	}
 }
 
+func TestPublicHTTPResourceMutationsAreAuthorizedAndObserved(t *testing.T) {
+	env := newEnvironment(t, time.Hour)
+	env.login(t, "allowed")
+	item := widget("mutation-uid", "mutable", "platform", "Ready", 1)
+	if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Create(t.Context(), item, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItems(t, &env, "platform", "mutation-uid")
+	path := env.app.URL + widgetPath("platform") + "/mutation-uid"
+
+	updateYAML := "apiVersion: widgets.example.test/v1\nkind: Widget\nmetadata:\n  name: mutable\n  namespace: team-a\n  uid: mutation-uid\n  labels:\n    tenant: platform\n    inspect: \"true\"\nspec:\n  size: updated\n"
+	response := mutate(t, env.client, http.MethodPut, path, updateYAML, env.app.URL)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("update status %d: %s", response.StatusCode, body(response))
+	}
+	response.Body.Close()
+	waitForYAML(t, &env, "mutation-uid", "size: updated")
+
+	response = mutate(t, env.client, http.MethodPost, path+"/trigger", "", env.app.URL)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("trigger status %d: %s", response.StatusCode, body(response))
+	}
+	response.Body.Close()
+	waitForYAML(t, &env, "mutation-uid", "triggered-by: allowed@example.test")
+	waitForYAML(t, &env, "mutation-uid", "triggered-at:")
+
+	response = mutate(t, env.client, http.MethodDelete, path, "", env.app.URL)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status %d: %s", response.StatusCode, body(response))
+	}
+	response.Body.Close()
+	waitForItemsAt(t, &env, widgetPath("platform"))
+}
+
+func TestPublicHTTPResourceMutationsRejectUnauthorizedAndCrossOriginRequests(t *testing.T) {
+	env := newEnvironment(t, time.Hour)
+	env.login(t, "payments")
+	item := widget("protected-uid", "protected", "payments", "Ready", 1)
+	if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Create(t.Context(), item, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForReady(t, &env, widgetPath("payments"))
+	waitForItems(t, &env, "payments", "protected-uid")
+	path := env.app.URL + widgetPath("payments") + "/protected-uid/trigger"
+	response := mutate(t, env.client, http.MethodPost, path, "", env.app.URL)
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("read-only tenant status %d: %s", response.StatusCode, body(response))
+	}
+	response.Body.Close()
+
+	env.login(t, "allowed")
+	response = mutate(t, env.client, http.MethodPost, path, "", "https://attacker.example")
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin status %d: %s", response.StatusCode, body(response))
+	}
+	response.Body.Close()
+	response = mutate(t, env.client, http.MethodPost, path, "", "")
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing-origin status %d: %s", response.StatusCode, body(response))
+	}
+	response.Body.Close()
+	object, err := env.kube.Resource(env.gvr).Namespace("team-a").Get(t.Context(), "protected", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(object.GetAnnotations()) != 0 {
+		t.Fatalf("rejected mutation changed annotations: %#v", object.GetAnnotations())
+	}
+}
+
+func TestPublicHTTPSessionExposesTenantMutationActionsByRole(t *testing.T) {
+	for _, test := range []struct {
+		user string
+		want string
+	}{
+		{user: "payments", want: `"actions":[]`},
+		{user: "supervisor", want: `"actions":["trigger"]`},
+		{user: "allowed", want: `"actions":["trigger","update","delete"]`},
+	} {
+		t.Run(test.user, func(t *testing.T) {
+			env := newEnvironment(t, time.Hour)
+			env.login(t, test.user)
+			response := get(t, env.client, env.app.URL+"/api/session")
+			contents := body(response)
+			if response.StatusCode != http.StatusOK || !strings.Contains(contents, test.want) {
+				t.Fatalf("session status %d body %s, want %s", response.StatusCode, contents, test.want)
+			}
+		})
+	}
+}
+
+func TestPublicHTTPSupervisorCanTriggerButCannotUpdateOrDelete(t *testing.T) {
+	env := newEnvironment(t, time.Hour)
+	env.login(t, "supervisor")
+	item := widget("supervised-uid", "supervised", "platform", "Ready", 1)
+	if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Create(t.Context(), item, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItems(t, &env, "platform", "supervised-uid")
+	path := env.app.URL + widgetPath("platform") + "/supervised-uid"
+	response := mutate(t, env.client, http.MethodPost, path+"/trigger", "", env.app.URL)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("trigger status %d: %s", response.StatusCode, body(response))
+	}
+	response.Body.Close()
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		response = mutate(t, env.client, method, path, "ignored", env.app.URL)
+		if response.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s status %d: %s", method, response.StatusCode, body(response))
+		}
+		response.Body.Close()
+	}
+}
+
 func TestPublicHTTPResourceInspectionTracksCurrentUIDAndTenant(t *testing.T) {
 	env := newEnvironment(t, time.Hour)
 	env.login(t, "allowed")
@@ -650,7 +764,7 @@ func TestPublicHTTPResourceInspectionTracksCurrentUIDAndTenant(t *testing.T) {
 	if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Update(t.Context(), platform, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	waitForYAML(t, &env, "platform", "old-uid", "answer: 42")
+	waitForYAML(t, &env, "old-uid", "answer: 42")
 
 	if err := env.kube.Resource(env.gvr).Namespace("team-a").Delete(t.Context(), "shared-name", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
@@ -1525,10 +1639,10 @@ func waitForReady(t *testing.T, env *environment, path string) {
 	t.Fatalf("resource endpoint did not become ready at %s", path)
 }
 
-func waitForYAML(t *testing.T, env *environment, tenant, uid, expected string) {
+func waitForYAML(t *testing.T, env *environment, uid, expected string) {
 	t.Helper()
 	for range 100 {
-		response := get(t, env.client, env.app.URL+widgetPath(tenant)+"/"+uid)
+		response := get(t, env.client, env.app.URL+widgetPath("platform")+"/"+uid)
 		if response.StatusCode == http.StatusOK {
 			var detail resources.Detail
 			decode(t, response, &detail)
@@ -1628,6 +1742,23 @@ func TestExpiryAndLogoutInvalidateAccess(t *testing.T) {
 func get(t *testing.T, client *http.Client, target string) *http.Response {
 	t.Helper()
 	response, err := client.Get(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+func mutate(t *testing.T, client *http.Client, method, target, contents, origin string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequest(method, target, strings.NewReader(contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", origin)
+	if contents != "" {
+		request.Header.Set("Content-Type", "application/yaml")
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}

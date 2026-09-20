@@ -42,7 +42,7 @@ tenants:
 	if err == nil {
 		t.Fatal("expected invalid configuration")
 	}
-	for _, expected := range []string{"duplicates tenant duplicate", "groups must contain", "labelSelector"} {
+	for _, expected := range []string{"duplicates tenant duplicate", "must contain at least one identity-provider group", "labelSelector"} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Errorf("error %q does not contain %q", err, expected)
 		}

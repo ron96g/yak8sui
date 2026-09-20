@@ -83,10 +83,12 @@ type IdentityConfig struct {
 }
 
 type TenantConfig struct {
-	ID            string   `yaml:"id"`
-	Name          string   `yaml:"name"`
-	Groups        []string `yaml:"groups"`
-	LabelSelector string   `yaml:"labelSelector"`
+	ID               string   `yaml:"id"`
+	Name             string   `yaml:"name"`
+	Groups           []string `yaml:"groups"`
+	SupervisorGroups []string `yaml:"supervisorGroups"`
+	AdminGroups      []string `yaml:"adminGroups"`
+	LabelSelector    string   `yaml:"labelSelector"`
 }
 
 func Load(path string) (Config, error) {
@@ -359,8 +361,8 @@ func (c *Config) validateTenants(problems *[]string) {
 		if tenant.Name == "" {
 			*problems = append(*problems, prefix+".name is required")
 		}
-		if len(tenant.Groups) == 0 {
-			*problems = append(*problems, prefix+".groups must contain at least one identity-provider group")
+		if len(tenant.Groups)+len(tenant.SupervisorGroups)+len(tenant.AdminGroups) == 0 {
+			*problems = append(*problems, prefix+" must contain at least one identity-provider group across groups, supervisorGroups, or adminGroups")
 		}
 		if tenant.LabelSelector == "" {
 			*problems = append(*problems, prefix+".labelSelector is required")

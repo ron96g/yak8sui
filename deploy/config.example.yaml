@@ -21,4 +21,7 @@ tenants:
   - id: platform
     name: Platform
     groups: [yak8sui-platform-admins]
+    # Optional roles. Also add update/delete to the matching ClusterRole rules.
+    # supervisorGroups: [yak8sui-platform-supervisors]
+    # adminGroups: [yak8sui-platform-admins]
     labelSelector: "yak8sui.io/tenant=platform"

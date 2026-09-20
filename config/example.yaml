@@ -55,9 +55,13 @@ observation:
 tenants:
   - id: platform
     name: Platform
-    groups: ["yak8sui-platform-admins"]
+    # groups grant read-only access. Role groups also imply tenant access.
+    groups: ["yak8sui-platform-viewers"]
+    # supervisorGroups: ["yak8sui-platform-supervisors"]
+    # adminGroups: ["yak8sui-platform-admins"]
     labelSelector: "yak8sui.io/tenant=platform"
   - id: payments
     name: Payments
-    groups: ["yak8sui-payments-viewers", "yak8sui-platform-admins"]
+    groups: ["yak8sui-payments-viewers"]
+    adminGroups: ["yak8sui-platform-admins"]
     labelSelector: "yak8sui.io/tenant=payments"

@@ -1,6 +1,6 @@
 # YAK8SUI resource inspection
 
-YAK8SUI is a read-only administrative view of selected Kubernetes resources, isolated by explicitly authorized tenant context.
+YAK8SUI is an administrative view of selected Kubernetes resources, isolated by explicitly authorized tenant context. Inspection is read-only by default; optional per-tenant roles permit controlled mutations.
 
 ## Language
 
@@ -8,7 +8,10 @@ YAK8SUI is a read-only administrative view of selected Kubernetes resources, iso
 A configured security boundary with an identifier, display name, identity-provider groups, and a Kubernetes label selector.
 
 **Authorized tenant**:
-A tenant for which the signed-in user's verified identity-provider groups intersect the tenant's configured groups.
+A tenant for which the signed-in user's verified identity-provider groups intersect the tenant's configured read-only, supervisor, or admin groups.
+
+**Tenant role**:
+An optional permission level derived from tenant-specific identity-provider groups. A supervisor may trigger reconciliation; an admin may trigger, update, and delete resources. Absence of either role remains read-only.
 
 **Tenant context**:
 The tenant identifier explicitly carried by an application request and independently authorized by the backend.

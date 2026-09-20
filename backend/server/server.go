@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/ron96g/yak8sui/backend/config"
 	"github.com/ron96g/yak8sui/backend/resources"
 	"golang.org/x/oauth2"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 const (
@@ -31,6 +33,9 @@ const (
 	fieldName     = "name"
 	fieldError    = "error"
 	fieldReason   = "reason"
+	actionTrigger = "trigger"
+	actionUpdate  = "update"
+	actionDelete  = "delete"
 )
 
 type oidcClient interface {
@@ -52,12 +57,14 @@ type Server struct {
 	resources     *resources.Projection
 	catalog       *resources.Catalog
 	relationships resources.RelationshipResolver
+	mutator       *resources.Mutator
 }
 
-func New(cfg *config.Config, oidcClient oidcClient, sessions *auth.Sessions, projection *resources.Projection, catalog *resources.Catalog) *Server {
+func New(cfg *config.Config, oidcClient oidcClient, sessions *auth.Sessions, projection *resources.Projection, catalog *resources.Catalog, mutator *resources.Mutator) *Server {
 	s := &Server{cfg: *cfg, oidc: oidcClient, sessions: sessions, mux: http.NewServeMux(), attempts: map[string]loginAttempt{}}
 	s.resources = projection
 	s.catalog = catalog
+	s.mutator = mutator
 	if projection != nil {
 		s.relationships = resources.NewRelationshipResolver(projection)
 	}
@@ -78,6 +85,11 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("GET /api/v1/tenants/{tenant}/detail-streams/{group}/{version}/{resource}/{uid}", s.requireTenant(s.detailStream))
 		s.mux.HandleFunc("GET /api/v1/tenants/{tenant}/resources/{group}/{version}/{resource}", s.requireTenant(s.resourceList))
 		s.mux.HandleFunc("GET /api/v1/tenants/{tenant}/resources/{group}/{version}/{resource}/{uid}", s.requireTenant(s.resourceDetail))
+		if s.mutator != nil {
+			s.mux.HandleFunc("PUT /api/v1/tenants/{tenant}/resources/{group}/{version}/{resource}/{uid}", s.requireTenant(s.updateResource))
+			s.mux.HandleFunc("DELETE /api/v1/tenants/{tenant}/resources/{group}/{version}/{resource}/{uid}", s.requireTenant(s.deleteResource))
+			s.mux.HandleFunc("POST /api/v1/tenants/{tenant}/resources/{group}/{version}/{resource}/{uid}/trigger", s.requireTenant(s.triggerResource))
+		}
 		s.mux.HandleFunc("GET /api/v1/tenants/{tenant}/relationships/{group}/{version}/{resource}/{uid}", s.requireTenant(s.relationshipNeighborhood))
 		s.mux.HandleFunc("GET /api/v1/tenants/{tenant}/relationship-streams/{group}/{version}/{resource}/{uid}", s.requireTenant(s.relationshipStream))
 	}
@@ -91,7 +103,7 @@ func (s *Server) routes() {
 	}
 }
 
-func (s *Server) detailStream(w http.ResponseWriter, r *http.Request, tenant config.TenantConfig) {
+func (s *Server) detailStream(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig) {
 	resourceType, ok := s.requestedType(r)
 	if !ok {
 		writeError(w, http.StatusNotFound, "configured resource type not found")
@@ -193,7 +205,7 @@ func (s *Server) tenantAuthorized(session *auth.Session, tenantID string) bool {
 	return false
 }
 
-func (s *Server) relationshipNeighborhood(w http.ResponseWriter, r *http.Request, tenant config.TenantConfig) {
+func (s *Server) relationshipNeighborhood(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig) {
 	resourceType, ok := s.requestedType(r)
 	if !ok {
 		writeError(w, http.StatusNotFound, "configured resource type not found")
@@ -207,7 +219,7 @@ func (s *Server) relationshipNeighborhood(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (s *Server) relationshipStream(w http.ResponseWriter, r *http.Request, tenant config.TenantConfig) {
+func (s *Server) relationshipStream(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig) {
 	resourceType, ok := s.requestedType(r)
 	if !ok {
 		writeError(w, http.StatusNotFound, "configured resource type not found")
@@ -310,7 +322,7 @@ func (s *Server) writeRelationshipError(w http.ResponseWriter, r *http.Request, 
 	return true
 }
 
-func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request, tenant config.TenantConfig) {
+func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig) {
 	resourceType, ok := s.requestedType(r)
 	if !ok {
 		writeError(w, http.StatusNotFound, "configured resource type not found")
@@ -405,7 +417,7 @@ func writeSSEEvent(w http.ResponseWriter, event string, value any) bool {
 	return err == nil
 }
 
-func (s *Server) resourceList(w http.ResponseWriter, r *http.Request, tenant config.TenantConfig) {
+func (s *Server) resourceList(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig) {
 	resourceType, ok := s.requestedType(r)
 	if !ok {
 		writeError(w, http.StatusNotFound, "configured resource type not found")
@@ -461,7 +473,7 @@ func writeQueryError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusInternalServerError, "could not query resources")
 }
 
-func (s *Server) resourceDetail(w http.ResponseWriter, r *http.Request, tenant config.TenantConfig) {
+func (s *Server) resourceDetail(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig) {
 	resourceType, ok := s.requestedType(r)
 	if !ok {
 		writeError(w, http.StatusNotFound, "configured resource type not found")
@@ -487,6 +499,115 @@ func (s *Server) resourceDetail(w http.ResponseWriter, r *http.Request, tenant c
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) updateResource(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig) {
+	resourceType, target, ok := s.mutationTarget(w, r, tenant, actionUpdate)
+	if !ok {
+		return
+	}
+	contents, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "resource YAML exceeds 4 MiB")
+		return
+	}
+	if strings.TrimSpace(string(contents)) == "" {
+		writeError(w, http.StatusBadRequest, "resource YAML is required")
+		return
+	}
+	if err := s.mutator.Update(r.Context(), &resourceType, target, contents); err != nil {
+		s.writeMutationError(w, "update", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig) {
+	resourceType, target, ok := s.mutationTarget(w, r, tenant, actionDelete)
+	if !ok {
+		return
+	}
+	if err := s.mutator.Delete(r.Context(), &resourceType, target); err != nil {
+		s.writeMutationError(w, "delete", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) triggerResource(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig) {
+	resourceType, target, ok := s.mutationTarget(w, r, tenant, actionTrigger)
+	if !ok {
+		return
+	}
+	session, ok := sessionFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "session context unavailable")
+		return
+	}
+	actor := session.Identity.Email
+	if actor == "" {
+		actor = session.Identity.Name
+	}
+	if actor == "" {
+		actor = session.Identity.Subject
+	}
+	if err := s.mutator.Trigger(r.Context(), &resourceType, target, actor); err != nil {
+		s.writeMutationError(w, "trigger", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) mutationTarget(w http.ResponseWriter, r *http.Request, tenant *config.TenantConfig, action string) (resources.Type, resources.MutationTarget, bool) {
+	if r.Header.Get("Origin") == "" || !s.sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin resource mutation rejected")
+		return resources.Type{}, resources.MutationTarget{}, false
+	}
+	session, ok := sessionFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "session context unavailable")
+		return resources.Type{}, resources.MutationTarget{}, false
+	}
+	if !mutationAllowed(tenant, session.Identity.Groups, action) {
+		writeError(w, http.StatusForbidden, "resource mutation is not permitted for this tenant")
+		return resources.Type{}, resources.MutationTarget{}, false
+	}
+	resourceType, ok := s.requestedType(r)
+	if !ok {
+		writeError(w, http.StatusNotFound, "configured resource type not found")
+		return resources.Type{}, resources.MutationTarget{}, false
+	}
+	if !resourceType.Available {
+		s.writeUnavailableType(w, &resourceType)
+		return resources.Type{}, resources.MutationTarget{}, false
+	}
+	detail, err := s.resources.Get(r.Context(), tenant.ID, resourceType.Key(), r.PathValue("uid"))
+	if s.writeDetailError(w, r, &resourceType, err) {
+		return resources.Type{}, resources.MutationTarget{}, false
+	}
+	return resourceType, resources.MutationTarget{UID: detail.UID, Name: detail.Name, Namespace: detail.Namespace}, true
+}
+
+func (s *Server) writeMutationError(w http.ResponseWriter, action string, err error) {
+	status := http.StatusInternalServerError
+	message := "could not " + action + " resource"
+	switch {
+	case errors.Is(err, resources.ErrResourceIdentityChanged), apierrors.IsConflict(err):
+		status = http.StatusConflict
+		message = "resource changed; reload it before trying again"
+	case apierrors.IsNotFound(err):
+		status = http.StatusNotFound
+		message = "resource not found"
+	case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
+		status = http.StatusForbidden
+		message = "Kubernetes denied the resource mutation"
+	case apierrors.IsInvalid(err), strings.HasPrefix(err.Error(), "decode "):
+		status = http.StatusUnprocessableEntity
+		message = err.Error()
+	default:
+		slog.Error("mutate resource", "action", action, "error", err)
+	}
+	writeError(w, status, message)
 }
 
 func (s *Server) writeUnavailableType(w http.ResponseWriter, resourceType *resources.Type) {
@@ -658,7 +779,7 @@ func (s *Server) currentSession(r *http.Request) (*auth.Session, bool) {
 	return s.sessions.Get(cookie.Value)
 }
 
-func (s *Server) requireTenant(next func(http.ResponseWriter, *http.Request, config.TenantConfig)) http.HandlerFunc {
+func (s *Server) requireTenant(next func(http.ResponseWriter, *http.Request, *config.TenantConfig)) http.HandlerFunc {
 	return s.requireSession(func(w http.ResponseWriter, r *http.Request) {
 		session, ok := sessionFromContext(r.Context())
 		if !ok {
@@ -668,7 +789,7 @@ func (s *Server) requireTenant(next func(http.ResponseWriter, *http.Request, con
 		requested := r.PathValue("tenant")
 		for _, tenant := range s.authorizedTenants(session.Identity.Groups) {
 			if tenant.ID == requested {
-				next(w, r, tenant)
+				next(w, r, &tenant)
 				return
 			}
 		}
@@ -683,10 +804,10 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"user": map[string]string{fieldName: session.Identity.Name, "email": session.Identity.Email}, "expiresAt": session.ExpiresAt, "tenants": publicTenants(s.authorizedTenants(session.Identity.Groups))})
+	writeJSON(w, http.StatusOK, map[string]any{"user": map[string]string{fieldName: session.Identity.Name, "email": session.Identity.Email}, "expiresAt": session.ExpiresAt, "tenants": s.publicTenants(s.authorizedTenants(session.Identity.Groups), session.Identity.Groups)})
 }
 
-func (s *Server) tenantContext(w http.ResponseWriter, _ *http.Request, tenant config.TenantConfig) {
+func (s *Server) tenantContext(w http.ResponseWriter, _ *http.Request, tenant *config.TenantConfig) {
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"tenant": map[string]string{fieldID: tenant.ID, fieldName: tenant.Name}})
 }
@@ -703,7 +824,7 @@ func (s *Server) authorizedTenants(groups []string) []config.TenantConfig {
 	}
 	result := []config.TenantConfig{}
 	for _, tenant := range s.cfg.Tenants {
-		for _, group := range tenant.Groups {
+		for _, group := range tenantAccessGroups(&tenant) {
 			if allowed[group] {
 				result = append(result, tenant)
 				break
@@ -713,12 +834,51 @@ func (s *Server) authorizedTenants(groups []string) []config.TenantConfig {
 	return result
 }
 
-func publicTenants(tenants []config.TenantConfig) []map[string]string {
-	result := make([]map[string]string, 0, len(tenants))
+type publicTenant struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Actions []string `json:"actions"`
+}
+
+func (s *Server) publicTenants(tenants []config.TenantConfig, groups []string) []publicTenant {
+	result := make([]publicTenant, 0, len(tenants))
 	for _, tenant := range tenants {
-		result = append(result, map[string]string{fieldID: tenant.ID, fieldName: tenant.Name})
+		actions := []string{}
+		if mutationAllowed(&tenant, groups, actionTrigger) {
+			actions = append(actions, actionTrigger)
+		}
+		if mutationAllowed(&tenant, groups, actionUpdate) {
+			actions = append(actions, actionUpdate, actionDelete)
+		}
+		result = append(result, publicTenant{ID: tenant.ID, Name: tenant.Name, Actions: actions})
 	}
 	return result
+}
+
+func tenantAccessGroups(tenant *config.TenantConfig) []string {
+	groups := append([]string{}, tenant.Groups...)
+	groups = append(groups, tenant.SupervisorGroups...)
+	return append(groups, tenant.AdminGroups...)
+}
+
+func mutationAllowed(tenant *config.TenantConfig, identityGroups []string, action string) bool {
+	groups := map[string]bool{}
+	for _, group := range identityGroups {
+		groups[group] = true
+	}
+	if action == actionTrigger {
+		for _, group := range tenant.SupervisorGroups {
+			if groups[group] {
+				return true
+			}
+		}
+	}
+	for _, group := range tenant.AdminGroups {
+		if groups[group] {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

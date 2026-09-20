@@ -527,6 +527,13 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     'Deployment is below its requested capacity',
   )
   await page.getByRole('tab', { name: 'YAML' }).click()
+  await expect(
+    page.getByRole('button', { name: 'Update', exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: 'Trigger update' }),
+  ).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Delete' })).toBeVisible()
   await expect(page.locator('.view-lines')).toContainText('generation: 5')
   expect(eventRequests).toHaveLength(0)
   await page.keyboard.press('Escape')

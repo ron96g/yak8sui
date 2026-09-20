@@ -95,8 +95,8 @@ func Config(appAddress, appURL, issuerURL, databasePath, webDirectory string) co
 			{Parent: config.RelationshipType{Group: policyGroup, Kind: policyKind}, Child: config.RelationshipType{Group: widgetGroup, Kind: widgetKind}, Resolver: fieldRefResolver, FieldReference: &config.FieldReferenceConfig{Path: "$.spec.policyRef"}},
 		}},
 		Tenants: []config.TenantConfig{
-			{ID: platformTenant, Name: "Platform", Groups: []string{AdminGroup}, LabelSelector: "yak8sui.io/tenant=" + platformTenant},
-			{ID: "payments", Name: "Payments", Groups: []string{AdminGroup}, LabelSelector: "yak8sui.io/tenant=payments"},
+			{ID: platformTenant, Name: "Platform", AdminGroups: []string{AdminGroup}, LabelSelector: "yak8sui.io/tenant=" + platformTenant},
+			{ID: "payments", Name: "Payments", AdminGroups: []string{AdminGroup}, LabelSelector: "yak8sui.io/tenant=payments"},
 		},
 	}
 }

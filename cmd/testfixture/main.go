@@ -83,7 +83,7 @@ func run() error {
 		}
 	}()
 	appHandler := http.NewServeMux()
-	appHandler.Handle("/", appserver.New(&cfg, oidc, auth.NewSessions(cfg.Server.SessionTTL), projection, observation.Catalog()).Handler())
+	appHandler.Handle("/", appserver.New(&cfg, oidc, auth.NewSessions(cfg.Server.SessionTTL), projection, observation.Catalog(), observation.Mutator()).Handler())
 	appHandler.HandleFunc("POST /demo/simulate/widget-update", demo.LiveSimulationHandler(kube))
 	appHandler.HandleFunc("POST /demo/simulate/search-update", demo.SearchSimulationHandler(kube))
 	appHandler.HandleFunc("POST /demo/simulate/observation-loss", demo.ObservationSimulationHandler(observation, kube))

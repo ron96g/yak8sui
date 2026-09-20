@@ -1,0 +1,9 @@
+# Allow explicit mutations of authorized resources
+
+Supersede the absolute read-only boundary in ADRs 0001 and 0021 with optional, per-tenant mutation roles. Read-only remains the default: `groups` grant inspection only, `supervisorGroups` grant inspection and trigger, and `adminGroups` grant inspection, trigger, update, and delete. Supervisor and admin membership implies tenant access without requiring duplicate membership in `groups`.
+
+Allow three explicit actions on a resource already visible in the active tenant: replace it from the YAML editor, delete it, or trigger controller reconciliation. The trigger action writes the unqualified annotations `triggered-by` and `triggered-at`; their values are the authenticated user's email (falling back to name then subject) and the server's RFC3339 UTC timestamp. The session API exposes the authorized action names for each tenant so the UI can omit unavailable controls, but the backend independently enforces every action.
+
+Address mutations by the projected UID and resolve name and namespace only from the tenant-authorized projection. Before update or trigger, verify the live Kubernetes UID still matches; delete uses a Kubernetes UID precondition. Require a same-origin browser request, permit only configured and currently available resource types, and rely on Kubernetes RBAC and validation for final authorization. Mutation responses acknowledge the Kubernetes operation, while the existing informer and SSE projection remain the sole source of displayed state.
+
+The YAML editor may change resource content but not its API version, kind, name, namespace, or UID. Delete requires confirmation. This design intentionally gives the application's service account mutation authority for every resource configured in its RBAC rules, so deployments must keep those rules aligned with the selected resource types.

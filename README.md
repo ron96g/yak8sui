@@ -33,10 +33,14 @@ provider signs in `Demo Operator` without external credentials. Select Platform
 to inspect the namespaced `platform-api` Widget and cluster-scoped
 `platform-guardrails` ClusterPolicy, then Payments to inspect their tenant
 counterparts. The controlled discovery fixture demonstrates two API groups and
-a `v1beta1` override. Complete resources are shown as read-only YAML. An
+a `v1beta1` override. Complete resources are shown as editable YAML for the demo
+administrator. An
 `internal-only` Widget is outside both tenant selectors and must not appear.
 Name and Namespace search updates automatically after a 300ms typing pause,
-including mode changes; new filters return to page one. No Apply action is needed.
+including mode changes; new filters return to page one. In a resource's YAML tab,
+edit and choose **Update** to replace it with the current editor state, choose
+**Trigger update** to set `triggered-by` and `triggered-at` annotations, or choose
+**Delete** and confirm to remove it. The live observer reports the resulting state.
 JSONPath edits, Exists/Equals changes, and typed JSON values use the same automatic
 search. Examples include `$.status.conditions` (present, including null),
 `$.spec.replicas` Equals `3`, and `$.status.conditions[*].type` Equals `"Ready"`.
@@ -193,6 +197,12 @@ go run ./cmd/yak8sui -config config/local.yaml
 ```
 
 Configuration is restart-required. `cookieSecure` defaults to true for an HTTPS `publicURL`; local plain-HTTP development may explicitly set `cookieSecure: false`. Client secrets should be injected into the local/deployment file from a secret manager and must not be committed.
+
+Tenant access is read-only by default through `groups`. Optional
+`supervisorGroups` add the trigger action, while `adminGroups` add trigger,
+update, and delete; either role group also grants access to that tenant. The
+backend enforces these permissions independently of button visibility. Kubernetes
+RBAC must separately grant `update` and `delete` for mutable resource types.
 
 Configure API groups under `observation.groups` and a writable SQLite
 `databasePath`. Each group can include an explicit resource set (or all

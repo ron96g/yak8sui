@@ -48,10 +48,13 @@ neither cert-manager nor sample resources. Tenant selectors must match labels
 already on the resources; an empty tenant view is expected when no labels match.
 
 Keep `observation.groups` and the ClusterRole resource rules aligned. The base
-grants only get/list/watch on the example resource types plus API discovery.
-Add explicitly selected built-ins and configured relationships as needed. RBAC
-does not enforce label selectors: the application enforces tenant visibility,
-while its ServiceAccount can read all permitted resource types across namespaces.
+grants only get/list/watch on the example resource types plus API discovery, so
+the default deployment is read-only. Optional tenant `supervisorGroups` may
+trigger reconciliation; `adminGroups` may also update and delete. Add `update`
+and `delete` to the corresponding ClusterRole resource rules before enabling
+those roles. RBAC does not enforce label selectors: the application enforces
+tenant visibility, while its ServiceAccount can access all permitted resource
+types across namespaces.
 
 Create the namespace and configuration Secret before starting the pod:
 

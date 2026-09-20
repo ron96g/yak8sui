@@ -1,4 +1,7 @@
 import LogoutIcon from '@mui/icons-material/Logout'
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
+import PlayArrowIcon from '@mui/icons-material/PlayArrow'
+import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined'
 import {
   Alert,
   AppBar,
@@ -38,7 +41,11 @@ import { shellBackground, technicalText } from './theme'
 
 const YamlViewer = lazy(() => import('./YamlViewer'))
 
-type Tenant = { id: string; name: string }
+type Tenant = {
+  id: string
+  name: string
+  actions: Array<'trigger' | 'update' | 'delete'>
+}
 type Session = {
   user: { name: string; email: string }
   expiresAt: string
@@ -91,6 +98,14 @@ export default function App() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailTab, setDetailTab] = useState(0)
   const [detailType, setDetailType] = useState<ResourceType | null>(null)
+  const [yamlDraft, setYamlDraft] = useState('')
+  const yamlDirty = useRef(false)
+  const [mutation, setMutation] = useState<
+    'update' | 'trigger' | 'delete' | null
+  >(null)
+  const mutationRevision = useRef(0)
+  const [deleteConfirmation, setDeleteConfirmation] = useState(false)
+  const [actionMessage, setActionMessage] = useState<string | null>(null)
   const hierarchyRevision = useRef(0)
   const [connectionState, setConnectionState] =
     useState<ConnectionState>('idle')
@@ -123,6 +138,12 @@ export default function App() {
     setPageCount(0)
     setDetail(null)
     setDetailType(null)
+    setYamlDraft('')
+    yamlDirty.current = false
+    mutationRevision.current += 1
+    setMutation(null)
+    setDeleteConfirmation(false)
+    setActionMessage(null)
     hierarchyRevision.current += 1
     setResourceType(null)
     setResourceTypes([])
@@ -420,6 +441,9 @@ export default function App() {
     const revision = contextRevision.current
     selectedUID.current = item.uid
     setDetail(null)
+    setYamlDraft('')
+    yamlDirty.current = false
+    setActionMessage(null)
     setDetailLoading(true)
     setDetailTab(0)
     setDetailType(resourceType)
@@ -490,8 +514,10 @@ export default function App() {
       if (
         revision === contextRevision.current &&
         request === detailRevision.current
-      )
+      ) {
         setDetail(payload)
+        if (!yamlDirty.current) setYamlDraft(payload.yaml)
+      }
     } catch (cause) {
       if (
         revision === contextRevision.current &&
@@ -516,6 +542,12 @@ export default function App() {
     detailRevision.current += 1
     setDetail(null)
     setDetailType(null)
+    setYamlDraft('')
+    yamlDirty.current = false
+    mutationRevision.current += 1
+    setMutation(null)
+    setDeleteConfirmation(false)
+    setActionMessage(null)
     selectedDetailType.current = null
     setDetailLoading(false)
     resumeResourceStreamAfterOwnership()
@@ -525,6 +557,74 @@ export default function App() {
     clearTenantData()
     setSession(null)
     await fetch('/api/logout', { method: 'POST' }).catch(() => undefined)
+  }
+
+  async function mutateResource(action: 'update' | 'trigger' | 'delete') {
+    if (!tenant || !detailType || !detail) return
+    setError(null)
+    setActionMessage(null)
+    setMutation(action)
+    const request = ++mutationRevision.current
+    const context = contextRevision.current
+    const uid = detail.uid
+    const path = `${resourcePath(tenant, detailType)}/${encodeURIComponent(detail.uid)}`
+    try {
+      const response = await fetch(
+        action === 'trigger' ? `${path}/trigger` : path,
+        action === 'update'
+          ? {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/yaml' },
+              body: yamlDraft,
+            }
+          : { method: action === 'delete' ? 'DELETE' : 'POST' },
+      )
+      if (response.status === 401) {
+        clearTenantData()
+        setSession(null)
+        setError('Your session expired. Sign in again.')
+        return
+      }
+      if (!response.ok) {
+        const problem = (await response.json().catch(() => ({}))) as {
+          error?: string
+        }
+        throw new Error(problem.error ?? `Could not ${action} the resource.`)
+      }
+      if (
+        request !== mutationRevision.current ||
+        context !== contextRevision.current ||
+        selectedUID.current !== uid
+      )
+        return
+      if (action === 'delete') {
+        closeDetail()
+        return
+      }
+      if (action === 'update') yamlDirty.current = false
+      setActionMessage(
+        action === 'update'
+          ? 'Update accepted. Waiting for the observed state.'
+          : 'Trigger annotations updated.',
+      )
+    } catch (cause) {
+      if (
+        request !== mutationRevision.current ||
+        context !== contextRevision.current ||
+        selectedUID.current !== uid
+      )
+        return
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : `Could not ${action} the resource.`,
+      )
+    } finally {
+      if (request === mutationRevision.current) {
+        setMutation(null)
+        setDeleteConfirmation(false)
+      }
+    }
   }
 
   if (loading)
@@ -685,7 +785,7 @@ export default function App() {
       )}
       <Dialog
         open={detailLoading || detail !== null}
-        onClose={closeDetail}
+        onClose={() => mutation === null && closeDetail()}
         maxWidth={detailTab === 2 ? 'xl' : 'lg'}
         fullWidth
         aria-labelledby="resource-detail-title"
@@ -712,8 +812,13 @@ export default function App() {
               mb={2}
               sx={technicalText}
             >
-              {detail.namespace || 'Cluster scoped'} · {detail.uid} · Read-only
+              {detail.namespace || 'Cluster scoped'} · {detail.uid}
             </Typography>
+          )}
+          {actionMessage && (
+            <Alert severity="success" sx={{ mb: 2 }}>
+              {actionMessage}
+            </Alert>
           )}
           {detail ? (
             <>
@@ -740,7 +845,14 @@ export default function App() {
                   <Suspense
                     fallback={<CircularProgress aria-label="Loading YAML" />}
                   >
-                    <YamlViewer value={detail.yaml} />
+                    <YamlViewer
+                      value={yamlDraft}
+                      readOnly={!tenant?.actions.includes('update')}
+                      onChange={(value) => {
+                        yamlDirty.current = value !== detail.yaml
+                        setYamlDraft(value)
+                      }}
+                    />
                   </Suspense>
                 </Box>
               ) : detailType && tenant ? (
@@ -772,7 +884,66 @@ export default function App() {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={closeDetail}>Close</Button>
+          {detail && detailTab === 1 && tenant?.actions.includes('update') && (
+            <Button
+              startIcon={<SaveOutlinedIcon />}
+              disabled={mutation !== null || !yamlDirty.current}
+              onClick={() => void mutateResource('update')}
+            >
+              Update
+            </Button>
+          )}
+          {detail && tenant?.actions.includes('trigger') && (
+            <Button
+              startIcon={<PlayArrowIcon />}
+              disabled={mutation !== null}
+              onClick={() => void mutateResource('trigger')}
+            >
+              Trigger update
+            </Button>
+          )}
+          {detail && tenant?.actions.includes('delete') && (
+            <Button
+              color="error"
+              startIcon={<DeleteOutlineIcon />}
+              disabled={mutation !== null}
+              onClick={() => setDeleteConfirmation(true)}
+            >
+              Delete
+            </Button>
+          )}
+          <Button disabled={mutation !== null} onClick={closeDetail}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={deleteConfirmation}
+        onClose={() => mutation === null && setDeleteConfirmation(false)}
+        aria-labelledby="delete-resource-title"
+      >
+        <DialogTitle id="delete-resource-title">Delete resource?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Delete {detailType?.kind} {detail?.name}? This action cannot be
+            undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            disabled={mutation !== null}
+            onClick={() => setDeleteConfirmation(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={mutation !== null}
+            onClick={() => void mutateResource('delete')}
+          >
+            Delete resource
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

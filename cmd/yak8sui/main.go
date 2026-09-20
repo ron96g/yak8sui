@@ -72,7 +72,7 @@ func run() error {
 			slog.Error("resource observation stopped", "error", observeErr)
 		}
 	}()
-	handler := appserver.New(&cfg, oidc, auth.NewSessions(cfg.Server.SessionTTL), projection, runtime.Catalog()).Handler()
+	handler := appserver.New(&cfg, oidc, auth.NewSessions(cfg.Server.SessionTTL), projection, runtime.Catalog(), runtime.Mutator()).Handler()
 	httpServer := &http.Server{Addr: cfg.Server.Address, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()

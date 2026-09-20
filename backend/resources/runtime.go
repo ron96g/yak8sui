@@ -70,6 +70,7 @@ func validateRelationshipTypes(relationships []config.RelationshipConfig, catalo
 }
 
 func (r *Runtime) Catalog() *Catalog { return r.catalog }
+func (r *Runtime) Mutator() *Mutator { return NewMutator(r.client) }
 
 func (r *Runtime) Run(ctx context.Context) error {
 	types := r.catalog.Types()
