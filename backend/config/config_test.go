@@ -78,7 +78,7 @@ func TestValidateRejectsContradictoryAndMalformedResourceRules(t *testing.T) {
 	}
 }
 
-func TestValidateDefaultsOwnerReferenceResolverAndAcceptsLabelJoin(t *testing.T) {
+func TestValidateDefaultsOwnerReferenceResolverAndAcceptsCustomResolvers(t *testing.T) {
 	cfg := config.Config{Server: config.ServerConfig{PublicURL: "https://app.example.test", SessionTTLRaw: "1h"}, Identity: config.IdentityConfig{IssuerURL: "https://id.example.test", ClientID: "client", ClientSecret: "secret", RedirectURL: "https://app.example.test/auth/callback"}, Observation: config.ObservationConfig{DatabasePath: "resources.db", Groups: []config.ResourceGroupConfig{{Group: "", Include: []string{"configmaps"}}, {Group: "example.test", Include: []string{"widgets"}}}, Relationships: []config.RelationshipConfig{{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}}}}, Tenants: []config.TenantConfig{{ID: "one", Name: "One", Groups: []string{"one"}, LabelSelector: "tenant=one"}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -90,9 +90,40 @@ func TestValidateDefaultsOwnerReferenceResolverAndAcceptsLabelJoin(t *testing.T)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid label join: %v", err)
 	}
+	cfg.Observation.Relationships[0] = config.RelationshipConfig{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}, Resolver: "fieldReference", FieldReference: &config.FieldReferenceConfig{Path: "$.spec.owner"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid field reference: %v", err)
+	}
 	cfg.Observation.Relationships[0].Resolver = "labelSelector"
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "resolver must be ownerReferences or labelJoin") {
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "resolver must be ownerReferences, labelJoin, or fieldReference") {
 		t.Fatalf("unsupported resolver error = %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidFieldReferenceOptions(t *testing.T) {
+	base := config.Config{Server: config.ServerConfig{PublicURL: "https://app.example.test", SessionTTLRaw: "1h"}, Identity: config.IdentityConfig{IssuerURL: "https://id.example.test", ClientID: "client", ClientSecret: "secret", RedirectURL: "https://app.example.test/auth/callback"}, Observation: config.ObservationConfig{DatabasePath: "resources.db", Groups: []config.ResourceGroupConfig{{Group: "", Include: []string{"configmaps"}}, {Group: "example.test", Include: []string{"widgets"}}}}, Tenants: []config.TenantConfig{{ID: "one", Name: "One", Groups: []string{"one"}, LabelSelector: "tenant=one"}}}
+	tests := []struct {
+		name, path, want string
+		options          *config.FieldReferenceConfig
+	}{
+		{name: "missing options", want: "fieldReference.path is required"},
+		{name: "metadata", options: &config.FieldReferenceConfig{Path: "$.metadata.owner"}, want: "under $.spec or $.status"},
+		{name: "root only", options: &config.FieldReferenceConfig{Path: "$.spec"}, want: "under $.spec or $.status"},
+		{name: "array", options: &config.FieldReferenceConfig{Path: "$.status.owners[0]"}, want: "field access only"},
+		{name: "wildcard", options: &config.FieldReferenceConfig{Path: "$.spec.*"}, want: "field access only"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := base
+			cfg.Observation.Relationships = []config.RelationshipConfig{{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}, Resolver: "fieldReference", FieldReference: test.options}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v, want %q", err, test.want)
+			}
+		})
+	}
+	base.Observation.Relationships = []config.RelationshipConfig{{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "example.test", Kind: "Widget"}, Resolver: "fieldReference", FieldReference: &config.FieldReferenceConfig{Path: "$.status.owner"}, LabelJoin: &config.LabelJoinConfig{Labels: []config.LabelJoinMapping{{ParentLabel: "a", ChildLabel: "b"}}}}}
+	if err := base.Validate(); err == nil || !strings.Contains(err.Error(), "labelJoin is only valid") {
+		t.Fatalf("cross-resolver validation error = %v", err)
 	}
 }
 

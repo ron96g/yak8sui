@@ -168,6 +168,15 @@ FROM resources,json_each(resources.contents,'$.metadata.labels') AS labels
 WHERE labels.type='text'
   AND NOT EXISTS (SELECT 1 FROM projection_metadata WHERE key='resource_labels_backfilled');
 INSERT OR IGNORE INTO projection_metadata(key,value) VALUES('resource_labels_backfilled','1');
+CREATE TABLE IF NOT EXISTS resource_owner_references (
+  child_type_key TEXT NOT NULL, child_uid TEXT NOT NULL, ordinal INTEGER NOT NULL,
+  parent_api_version TEXT NOT NULL, parent_kind TEXT NOT NULL, parent_name TEXT NOT NULL, parent_uid TEXT NOT NULL,
+  controller INTEGER NOT NULL,
+  PRIMARY KEY (child_type_key, child_uid, ordinal),
+  FOREIGN KEY (child_type_key, child_uid) REFERENCES resources(type_key, uid) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS resource_owner_reference_lookup
+  ON resource_owner_references(child_type_key,parent_api_version,parent_kind,parent_uid,child_uid);
 CREATE TABLE IF NOT EXISTS observation_scopes (
   type_key TEXT PRIMARY KEY, synchronized INTEGER NOT NULL,
   state TEXT NOT NULL DEFAULT 'resynchronizing', reason TEXT NOT NULL DEFAULT ''
@@ -178,6 +187,9 @@ PRAGMA synchronous = NORMAL;`
 	if _, err := p.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize SQLite projection: %w", err)
 	}
+	if err := p.backfillOwnerReferences(ctx); err != nil {
+		return err
+	}
 	// These additive migrations preserve databases created before observation
 	// freshness had explicit states. SQLite has no IF NOT EXISTS for columns.
 	for _, statement := range []string{
@@ -187,6 +199,38 @@ PRAGMA synchronous = NORMAL;`
 		if _, err := p.db.ExecContext(ctx, statement); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate observation scope: %w", err)
 		}
+	}
+	return nil
+}
+
+func (p *Projection) backfillOwnerReferences(ctx context.Context) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin owner reference backfill: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Warn("rollback owner reference backfill", "error", rollbackErr)
+		}
+	}()
+	const statement = `INSERT OR IGNORE INTO resource_owner_references(child_type_key,child_uid,ordinal,parent_api_version,parent_kind,parent_name,parent_uid,controller)
+SELECT resources.type_key,resources.uid,CAST(refs.key AS INTEGER),
+       COALESCE(json_extract(refs.value,'$.apiVersion'),''),
+       COALESCE(json_extract(refs.value,'$.kind'),''),
+       COALESCE(json_extract(refs.value,'$.name'),''),
+       COALESCE(json_extract(refs.value,'$.uid'),''),
+       CASE WHEN json_extract(refs.value,'$.controller') THEN 1 ELSE 0 END
+FROM resources,json_each(resources.contents,'$.metadata.ownerReferences') AS refs
+WHERE refs.type='object'
+  AND NOT EXISTS (SELECT 1 FROM projection_metadata WHERE key='resource_owner_references_backfilled')`
+	if _, err = tx.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("backfill owner references: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO projection_metadata(key,value) VALUES('resource_owner_references_backfilled','1')`); err != nil {
+		return fmt.Errorf("mark owner reference backfill complete: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit owner reference backfill: %w", err)
 	}
 	return nil
 }
@@ -243,6 +287,9 @@ func (p *Projection) ReplaceSnapshot(ctx context.Context, typeKey string, resour
 		if labelErr := replaceResourceLabels(ctx, tx, typeKey, resource.UID, resource.Contents); labelErr != nil {
 			return labelErr
 		}
+		if ownerErr := replaceResourceOwnerReferences(ctx, tx, typeKey, resource.UID, resource.Contents); ownerErr != nil {
+			return ownerErr
+		}
 		for _, tenantID := range resource.TenantIDs {
 			if _, err = tx.ExecContext(ctx, `INSERT INTO resource_tenants(type_key,uid,tenant_id) VALUES(?,?,?)`, typeKey, resource.UID, tenantID); err != nil {
 				return err
@@ -283,6 +330,9 @@ VALUES(?,?,?,?,?,?) ON CONFLICT(type_key,uid) DO UPDATE SET namespace=excluded.n
 	}
 	if labelErr := replaceResourceLabels(ctx, tx, typeKey, uid, contents); labelErr != nil {
 		return labelErr
+	}
+	if ownerErr := replaceResourceOwnerReferences(ctx, tx, typeKey, uid, contents); ownerErr != nil {
+		return ownerErr
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM resource_tenants WHERE type_key=? AND uid=?`, typeKey, uid); err != nil {
 		return err
@@ -598,28 +648,16 @@ func (p *Projection) authorizedObject(ctx context.Context, tenantID, typeKey, ui
 	return object, err
 }
 
-func (p *Projection) authorizedObjects(ctx context.Context, tenantID, typeKey string) ([]projectedObject, error) {
+func (p *Projection) authorizedObjectByName(ctx context.Context, tenantID, typeKey, namespace, name string) (projectedObject, error) {
 	if err := p.requireSynchronized(ctx, typeKey); err != nil {
-		return nil, err
+		return projectedObject{}, err
 	}
-	rows, err := p.db.QueryContext(ctx, `SELECT r.uid,r.namespace,r.name,r.contents FROM resource_tenants m INDEXED BY resource_tenant_scope JOIN resources r ON r.type_key=m.type_key AND r.uid=m.uid WHERE m.tenant_id=? AND m.type_key=?`, tenantID, typeKey)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			slog.Warn("close relationship rows", "error", err)
-		}
-	}()
-	var result []projectedObject
-	for rows.Next() {
-		var item projectedObject
-		if err := rows.Scan(&item.UID, &item.Namespace, &item.Name, &item.Contents); err != nil {
-			return nil, err
-		}
-		result = append(result, item)
-	}
-	return result, rows.Err()
+	var object projectedObject
+	err := p.db.QueryRowContext(ctx, `SELECT r.uid,r.namespace,r.name,r.contents
+FROM resource_tenants AS m INDEXED BY resource_tenant_scope
+CROSS JOIN resources AS r INDEXED BY resources_name
+WHERE m.tenant_id=? AND m.type_key=? AND r.type_key=m.type_key AND r.uid=m.uid AND r.namespace=? AND r.name=?`, tenantID, typeKey, namespace, name).Scan(&object.UID, &object.Namespace, &object.Name, &object.Contents)
+	return object, err
 }
 
 type sqlExecutor interface {
@@ -644,6 +682,119 @@ func replaceResourceLabels(ctx context.Context, db sqlExecutor, typeKey, uid str
 		}
 	}
 	return nil
+}
+
+func replaceResourceOwnerReferences(ctx context.Context, db sqlExecutor, typeKey, uid string, contents []byte) error {
+	refs, err := decodeOwnerReferences(contents)
+	if err != nil {
+		return err
+	}
+	if _, err = db.ExecContext(ctx, `DELETE FROM resource_owner_references WHERE child_type_key=? AND child_uid=?`, typeKey, uid); err != nil {
+		return err
+	}
+	for ordinal, ref := range refs {
+		controller := ref.Controller != nil && *ref.Controller
+		if _, err = db.ExecContext(ctx, `INSERT INTO resource_owner_references(child_type_key,child_uid,ordinal,parent_api_version,parent_kind,parent_name,parent_uid,controller) VALUES(?,?,?,?,?,?,?,?)`, typeKey, uid, ordinal, ref.APIVersion, ref.Kind, ref.Name, ref.UID, controller); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Projection) authorizedOwnerReferenceChildren(ctx context.Context, tenantID, childTypeKey, parentAPIVersion, parentKind, parentUID string) ([]projectedObject, map[string]bool, error) {
+	if err := p.requireSynchronized(ctx, childTypeKey); err != nil {
+		return nil, nil, err
+	}
+	rows, err := p.db.QueryContext(ctx, `SELECT r.uid,r.namespace,r.name,r.contents,o.controller
+FROM resource_owner_references AS o INDEXED BY resource_owner_reference_lookup
+CROSS JOIN resource_tenants AS m INDEXED BY resource_tenant_scope
+CROSS JOIN resources AS r INDEXED BY sqlite_autoindex_resources_1
+WHERE o.child_type_key=? AND o.parent_api_version=? AND o.parent_kind=? AND o.parent_uid=?
+AND m.tenant_id=? AND m.type_key=o.child_type_key AND m.uid=o.child_uid
+AND r.type_key=o.child_type_key AND r.uid=o.child_uid`, childTypeKey, parentAPIVersion, parentKind, parentUID, tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			slog.Warn("close owner reference rows", "error", closeErr)
+		}
+	}()
+	var result []projectedObject
+	controllers := map[string]bool{}
+	for rows.Next() {
+		var item projectedObject
+		var controller bool
+		if err := rows.Scan(&item.UID, &item.Namespace, &item.Name, &item.Contents, &controller); err != nil {
+			return nil, nil, err
+		}
+		result = append(result, item)
+		controllers[item.UID] = controllers[item.UID] || controller
+	}
+	return result, controllers, rows.Err()
+}
+
+func (p *Projection) authorizedFieldReferenceChildren(ctx context.Context, tenantID, childTypeKey, namespace, path string, ref *fieldReference) ([]projectedObject, bool, error) {
+	if err := p.requireSynchronized(ctx, childTypeKey); err != nil {
+		return nil, false, err
+	}
+	base := ` FROM resource_tenants AS m INDEXED BY resource_tenant_scope CROSS JOIN resources AS r INDEXED BY sqlite_autoindex_resources_1
+WHERE m.tenant_id=? AND m.type_key=? AND r.type_key=m.type_key AND r.uid=m.uid`
+	baseArgs := []any{tenantID, childTypeKey}
+	if namespace != "" {
+		base += ` AND r.namespace=?`
+		baseArgs = append(baseArgs, namespace)
+	}
+	present := `json_type(r.contents,?) IS NOT NULL`
+	shape := `json_type(r.contents,?)='object'
+AND json_type(r.contents,?||'.apiVersion')='text' AND json_extract(r.contents,?||'.apiVersion')=?
+AND json_type(r.contents,?||'.kind')='text' AND json_extract(r.contents,?||'.kind')=?
+AND json_type(r.contents,?||'.name')='text' AND json_extract(r.contents,?||'.name')<>''
+AND json_type(r.contents,?||'.uid')='text' AND json_extract(r.contents,?||'.uid')<>''`
+	shapeArgs := []any{path, path, path, ref.APIVersion, path, path, ref.Kind, path, path, path, path}
+	if ref.Namespace != "" {
+		shape += ` AND json_type(r.contents,?||'.namespace')='text' AND json_extract(r.contents,?||'.namespace')<>''`
+		shapeArgs = append(shapeArgs, path, path)
+	} else {
+		shape += ` AND COALESCE(json_extract(r.contents,?||'.namespace'),'')=''`
+		shapeArgs = append(shapeArgs, path)
+	}
+	exact := shape + ` AND json_extract(r.contents,?||'.name')=? AND json_extract(r.contents,?||'.uid')=?`
+	exactArgs := append(append([]any{}, shapeArgs...), path, ref.Name, path, ref.UID)
+	if ref.Namespace != "" {
+		exact += ` AND json_extract(r.contents,?||'.namespace')=?`
+		exactArgs = append(exactArgs, path, ref.Namespace)
+	}
+	queryArgs := append(append([]any{}, baseArgs...), exactArgs...)
+	rows, err := p.db.QueryContext(ctx, `SELECT r.uid,r.namespace,r.name,r.contents`+base+` AND `+exact, queryArgs...)
+	if err != nil {
+		return nil, false, err
+	}
+	var result []projectedObject
+	for rows.Next() {
+		var item projectedObject
+		if scanErr := rows.Scan(&item.UID, &item.Namespace, &item.Name, &item.Contents); scanErr != nil {
+			if closeErr := rows.Close(); closeErr != nil {
+				slog.Warn("close field reference rows after scan failure", "error", closeErr)
+			}
+			return nil, false, scanErr
+		}
+		result = append(result, item)
+	}
+	if closeErr := rows.Close(); closeErr != nil {
+		return nil, false, closeErr
+	}
+	identityMismatch := ` OR (` + shape + ` AND ((json_extract(r.contents,?||'.uid')=? AND json_extract(r.contents,?||'.name')<>?) OR (json_extract(r.contents,?||'.name')=? AND json_extract(r.contents,?||'.uid')<>?)))`
+	identityArgs := append(append([]any{}, shapeArgs...), path, ref.UID, path, ref.Name, path, ref.Name, path, ref.UID)
+	if ref.Namespace != "" {
+		identityMismatch = ` OR (` + shape + ` AND ((json_extract(r.contents,?||'.uid')=? AND (json_extract(r.contents,?||'.name')<>? OR json_extract(r.contents,?||'.namespace')<>?)) OR (json_extract(r.contents,?||'.name')=? AND (json_extract(r.contents,?||'.uid')<>? OR json_extract(r.contents,?||'.namespace')<>?))))`
+		identityArgs = append(append([]any{}, shapeArgs...), path, ref.UID, path, ref.Name, path, ref.Namespace, path, ref.Name, path, ref.UID, path, ref.Namespace)
+	}
+	malformedArgs := append(append(append([]any{}, baseArgs...), path), shapeArgs...)
+	malformedArgs = append(malformedArgs, identityArgs...)
+	var malformed bool
+	err = p.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1`+base+` AND `+present+` AND (NOT COALESCE((`+shape+`),0)`+identityMismatch+`))`, malformedArgs...).Scan(&malformed)
+	return result, malformed, err
 }
 
 type labelMatch struct {

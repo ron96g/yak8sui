@@ -249,7 +249,7 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   await expect(conditions).toContainText('All replicas are available')
   await expect(conditions).toContainText('3')
   await page.getByRole('tab', { name: 'YAML' }).click()
-  await expect(page.locator('.view-lines')).toContainText('replicas: 3')
+  await expect(page.locator('.view-lines')).toContainText('policyRef:')
   await page.getByRole('tab', { name: 'Ownership' }).click()
   const ownershipDialog = page.getByRole('dialog')
   await expect(
@@ -274,6 +274,15 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
   await expect(
     hierarchyTable.getByRole('columnheader', { name: 'Depth', exact: true }),
   ).toHaveCount(0)
+  await expect(
+    hierarchyTable.getByRole('columnheader', {
+      name: 'Controller',
+      exact: true,
+    }),
+  ).toHaveCount(0)
+  await expect(
+    hierarchyTable.getByRole('columnheader', { name: 'Actions', exact: true }),
+  ).toHaveCount(0)
   const settingsRow = hierarchyTable.getByRole('row', {
     name: /platform-settings.*Owner/,
   })
@@ -290,12 +299,11 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
       exact: true,
     })
     .click()
-  await expect(
-    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
-  ).toBeVisible()
-  await expect(
-    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
-  ).toHaveAttribute('data-depth', '2')
+  const settingsPolicyRow = hierarchyTable
+    .locator('tr[data-depth="2"]')
+    .filter({ hasText: 'platform-guardrails' })
+  await expect(settingsPolicyRow).toBeVisible()
+  await expect(settingsPolicyRow).toHaveAttribute('data-depth', '2')
   await page.waitForTimeout(1_000)
   expect(relationshipStreamRequests).toHaveLength(
     streamsBeforePresentationSwitch + 1,
@@ -306,30 +314,30 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
       exact: true,
     })
     .click()
-  await expect(
-    hierarchyTable.getByRole('row', { name: /platform-guardrails/ }),
-  ).toHaveCount(0)
+  await expect(settingsPolicyRow).toHaveCount(0)
   await hierarchyTable
     .getByRole('button', {
       name: 'Show owners of platform-settings',
       exact: true,
     })
     .click()
-  await expect(
-    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
-  ).toBeVisible()
+  await expect(settingsPolicyRow).toBeVisible()
   await ownershipDialog
     .getByRole('button', { name: 'Expand entire hierarchy', exact: true })
     .click()
   await expect(
-    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
+    hierarchyTable
+      .getByRole('row', { name: /platform-guardrails.*Owner/ })
+      .first(),
   ).toBeVisible()
+  await expect(
+    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
+  ).toHaveCount(2)
   await expect
     .poll(() => relationshipStreamRequests.length)
     .toBeGreaterThanOrEqual(5)
-  await ownershipDialog
-    .getByRole('button', { name: 'Preview platform-runtime', exact: true })
-    .click()
+  await expect(runtimeRow).toHaveCSS('cursor', 'pointer')
+  await runtimeRow.click()
   await expect(
     ownershipDialog
       .getByRole('region', { name: 'Ownership YAML preview' })
@@ -373,7 +381,9 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     .getByRole('button', { name: 'Table', exact: true })
     .click()
   await expect(
-    hierarchyTable.getByRole('row', { name: /platform-guardrails.*Owner/ }),
+    hierarchyTable
+      .getByRole('row', { name: /platform-guardrails.*Owner/ })
+      .first(),
   ).toBeVisible()
   await page.waitForTimeout(250)
   expect(relationshipStreamRequests).toHaveLength(streamsAfterExpansion)
@@ -381,11 +391,35 @@ test('sign in, inspect resource YAML, switch tenants, and log out', async ({
     .getByRole('button', { name: 'Graph', exact: true })
     .click()
   await expect(
-    ownershipDialog.getByRole('group', {
-      name: 'Resource platform-guardrails',
-      exact: true,
-    }),
+    ownershipDialog
+      .getByRole('group', {
+        name: 'Resource platform-guardrails',
+        exact: true,
+      })
+      .first(),
   ).toBeVisible()
+  const fieldReferencedPolicy = ownershipDialog.getByRole('group', {
+    name: 'platform-guardrails owns platform-api',
+    exact: true,
+  })
+  await expect(fieldReferencedPolicy.first()).toBeVisible({ timeout: 10_000 })
+  await ownershipDialog
+    .getByRole('button', { name: 'Preview platform-guardrails', exact: true })
+    .first()
+    .click()
+  await expect(
+    ownershipDialog.getByRole('region', { name: 'Ownership YAML preview' }),
+  ).toContainText('kind: ClusterPolicy')
+  const fieldReferenceUpdate = await page.request.post(
+    '/demo/simulate/field-reference-update',
+  )
+  expect(fieldReferenceUpdate.ok()).toBeTruthy()
+  await expect(fieldReferencedPolicy).toHaveCount(0)
+  const fieldReferenceRestore = await page.request.post(
+    '/demo/simulate/field-reference-update',
+  )
+  expect(fieldReferenceRestore.ok()).toBeTruthy()
+  await expect(fieldReferencedPolicy.first()).toBeVisible({ timeout: 10_000 })
   await ownershipDialog
     .getByRole('button', { name: 'Preview platform-settings', exact: true })
     .click()

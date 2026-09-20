@@ -71,10 +71,12 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
     }),
   ).toHaveAttribute('aria-expanded', 'true')
   await expect(
-    page.getByRole('button', {
-      name: 'Hide owners of platform-guardrails',
-      exact: true,
-    }),
+    page
+      .getByRole('button', {
+        name: 'Hide owners of platform-guardrails',
+        exact: true,
+      })
+      .first(),
   ).toHaveAttribute('aria-expanded', 'true')
   await page.getByRole('dialog').screenshot({
     path: testInfo.outputPath('ownership-modal.png'),
@@ -103,7 +105,7 @@ test('deep-space theme remains legible and keyboard-visible across key views', a
     .click()
   await expect(
     page.getByRole('group', {
-      name: 'Resource platform-guardrails',
+      name: 'platform-guardrails owns platform-settings',
       exact: true,
     }),
   ).toHaveCount(0)

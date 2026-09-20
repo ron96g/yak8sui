@@ -174,7 +174,7 @@ func OwnershipSimulationHandler(client dynamic.Interface) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]bool{"linked": linked}); err != nil {
+		if err := json.NewEncoder(w).Encode(map[string]bool{responseLinked: linked}); err != nil {
 			return
 		}
 	}
@@ -206,7 +206,42 @@ func LabelJoinSimulationHandler(client dynamic.Interface) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]bool{"linked": !linked}); err != nil {
+		if err := json.NewEncoder(w).Encode(map[string]bool{responseLinked: !linked}); err != nil {
+			return
+		}
+	}
+}
+
+// FieldReferenceSimulationHandler toggles the demo widget's structured policy reference.
+func FieldReferenceSimulationHandler(client dynamic.Interface) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		resource := client.Resource(WidgetGVR).Namespace(platformNamespace)
+		object, err := resource.Get(r.Context(), "platform-api", metav1.GetOptions{})
+		if err != nil {
+			http.Error(w, "could not load simulated resource", http.StatusInternalServerError)
+			return
+		}
+		_, linked, nestedErr := unstructured.NestedMap(object.Object, "spec", "policyRef")
+		if nestedErr != nil {
+			http.Error(w, "could not inspect simulated field reference", http.StatusInternalServerError)
+			return
+		}
+		if linked {
+			unstructured.RemoveNestedField(object.Object, "spec", "policyRef")
+		} else if fieldErr := unstructured.SetNestedField(object.Object, map[string]any{fieldAPIVersion: policyBetaGV, fieldKind: policyKind, fieldName: platformPolicy, fieldUID: platformPolicyUID}, "spec", "policyRef"); fieldErr != nil {
+			http.Error(w, "could not construct simulated field reference", http.StatusInternalServerError)
+			return
+		}
+		if _, err = resource.Update(r.Context(), object, metav1.UpdateOptions{}); err != nil {
+			http.Error(w, "could not update simulated field ownership", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]bool{responseLinked: !linked}); err != nil {
 			return
 		}
 	}

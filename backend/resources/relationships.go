@@ -57,8 +57,22 @@ type Neighborhood struct {
 type ownerReference struct {
 	APIVersion string `json:"apiVersion"`
 	Kind       string `json:"kind"`
+	Name       string `json:"name"`
 	UID        string `json:"uid"`
 	Controller *bool  `json:"controller"`
+}
+
+type fieldReference struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	UID        string `json:"uid"`
+	Namespace  string `json:"namespace"`
+}
+
+type relationshipAdapter interface {
+	parents(context.Context, string, *Type, *Type, projectedObject, *config.RelationshipConfig) ([]projectedObject, map[string]bool, *RelationshipProblem, error)
+	children(context.Context, string, *Type, projectedObject, *Type, *config.RelationshipConfig) ([]projectedObject, map[string]bool, *RelationshipProblem, error)
 }
 
 type projectedObject struct {
@@ -100,10 +114,6 @@ func (r *CompositeRelationshipResolver) Resolve(ctx context.Context, tenantID st
 }
 
 func (r *CompositeRelationshipResolver) parents(ctx context.Context, tenantID string, centerType *Type, center projectedObject, rules []config.RelationshipConfig, catalog *Catalog) ([]RelationshipNode, []RelationshipProblem, error) {
-	refs, err := decodeOwnerReferences(center.Contents)
-	if err != nil {
-		return nil, nil, err
-	}
 	var result []RelationshipNode
 	var problems []RelationshipProblem
 	seenParents := map[string]bool{}
@@ -115,39 +125,46 @@ func (r *CompositeRelationshipResolver) parents(ctx context.Context, tenantID st
 		if !ok || !current(ctx, r.projection, &parentType) {
 			continue
 		}
-		if rule.Resolver == "labelJoin" {
-			matched, problem, listErr := r.resolveLabelJoinParent(ctx, tenantID, &parentType, centerType, center, &rule)
-			if listErr != nil {
-				return nil, nil, listErr
-			}
-			if problem != nil {
-				problems = append(problems, *problem)
-			}
-			if matched != nil && !seenParents[parentType.Key()+"/"+matched.UID] {
-				seenParents[parentType.Key()+"/"+matched.UID] = true
-				result = append(result, relationshipNode(&parentType, *matched, false))
-			}
-			continue
+		adapter := r.adapter(&rule)
+		matched, controllers, problem, resolveErr := adapter.parents(ctx, tenantID, &parentType, centerType, center, &rule)
+		if resolveErr != nil {
+			return nil, nil, resolveErr
 		}
-		for _, ref := range refs {
-			if !ownerReferenceMatches(ref, &parentType) || seenParents[parentType.Key()+"/"+ref.UID] {
+		if problem != nil {
+			problems = append(problems, *problem)
+		}
+		for _, parent := range matched {
+			if seenParents[parentType.Key()+"/"+parent.UID] {
 				continue
 			}
-			parent, getErr := r.projection.authorizedObject(ctx, tenantID, parentType.Key(), ref.UID)
-			if errors.Is(getErr, sql.ErrNoRows) {
-				continue
-			}
-			if getErr != nil {
-				return nil, nil, getErr
-			}
-			if !validOwnershipScope(&parentType, parent.Namespace, centerType, center.Namespace) {
-				continue
-			}
-			seenParents[parentType.Key()+"/"+ref.UID] = true
-			result = append(result, relationshipNode(&parentType, parent, ref.Controller != nil && *ref.Controller))
+			seenParents[parentType.Key()+"/"+parent.UID] = true
+			result = append(result, relationshipNode(&parentType, parent, controllers[parent.UID]))
 		}
 	}
 	return result, problems, nil
+}
+
+func (r *CompositeRelationshipResolver) adapter(rule *config.RelationshipConfig) relationshipAdapter {
+	switch rule.Resolver {
+	case "labelJoin":
+		return labelJoinAdapter{resolver: r}
+	case "fieldReference":
+		return fieldReferenceAdapter{projection: r.projection}
+	default:
+		return ownerReferenceAdapter{projection: r.projection}
+	}
+}
+
+type labelJoinAdapter struct {
+	resolver *CompositeRelationshipResolver
+}
+
+func (a labelJoinAdapter) parents(ctx context.Context, tenantID string, parentType, childType *Type, child projectedObject, rule *config.RelationshipConfig) ([]projectedObject, map[string]bool, *RelationshipProblem, error) {
+	parent, problem, err := a.resolver.resolveLabelJoinParent(ctx, tenantID, parentType, childType, child, rule)
+	if parent == nil {
+		return nil, nil, problem, err
+	}
+	return []projectedObject{*parent}, nil, problem, err
 }
 
 func (r *CompositeRelationshipResolver) resolveLabelJoinParent(ctx context.Context, tenantID string, parentType, childType *Type, child projectedObject, rule *config.RelationshipConfig) (*projectedObject, *RelationshipProblem, error) {
@@ -188,40 +205,184 @@ func (r *CompositeRelationshipResolver) children(ctx context.Context, tenantID s
 		if !ok || !current(ctx, r.projection, &childType) {
 			continue
 		}
-		if rule.Resolver == "labelJoin" {
-			matched, ambiguous, parentErr := r.labelJoinChildren(ctx, tenantID, centerType, center, &childType, rule.LabelJoin.Labels)
-			if parentErr != nil {
-				return nil, nil, parentErr
-			}
-			for _, child := range matched {
-				key := childType.Key() + "/" + child.UID
-				if seenChildren[key] {
-					continue
-				}
-				seenChildren[key] = true
-				result = append(result, relationshipNode(&childType, child, false))
-			}
-			if ambiguous {
-				problems = append(problems, ambiguityProblem(&rule))
-			}
-			continue
+		children, controllers, problem, resolveErr := r.adapter(&rule).children(ctx, tenantID, centerType, center, &childType, &rule)
+		if resolveErr != nil {
+			return nil, nil, resolveErr
 		}
-		children, listErr := r.projection.authorizedObjects(ctx, tenantID, childType.Key())
-		if listErr != nil {
-			return nil, nil, listErr
+		if problem != nil {
+			problems = append(problems, *problem)
 		}
 		for _, child := range children {
-			for _, ref := range mustOwnerReferences(child.Contents) {
-				key := childType.Key() + "/" + child.UID
-				if ref.UID != center.UID || !ownerReferenceMatches(ref, centerType) || seenChildren[key] || !validOwnershipScope(centerType, center.Namespace, &childType, child.Namespace) {
-					continue
-				}
-				seenChildren[key] = true
-				result = append(result, relationshipNode(&childType, child, ref.Controller != nil && *ref.Controller))
+			key := childType.Key() + "/" + child.UID
+			if seenChildren[key] || !validOwnershipScope(centerType, center.Namespace, &childType, child.Namespace) {
+				continue
 			}
+			seenChildren[key] = true
+			result = append(result, relationshipNode(&childType, child, controllers[child.UID]))
 		}
 	}
 	return result, problems, nil
+}
+
+func (a labelJoinAdapter) children(ctx context.Context, tenantID string, parentType *Type, parent projectedObject, childType *Type, rule *config.RelationshipConfig) ([]projectedObject, map[string]bool, *RelationshipProblem, error) {
+	children, ambiguous, err := a.resolver.labelJoinChildren(ctx, tenantID, parentType, parent, childType, rule.LabelJoin.Labels)
+	if ambiguous {
+		problem := ambiguityProblem(rule)
+		return nil, nil, &problem, err
+	}
+	return children, nil, nil, err
+}
+
+type ownerReferenceAdapter struct{ projection *Projection }
+
+func (a ownerReferenceAdapter) parents(ctx context.Context, tenantID string, parentType, childType *Type, child projectedObject, _ *config.RelationshipConfig) ([]projectedObject, map[string]bool, *RelationshipProblem, error) {
+	refs, err := decodeOwnerReferences(child.Contents)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var result []projectedObject
+	controllers := map[string]bool{}
+	for _, ref := range refs {
+		if !ownerReferenceMatches(ref, parentType) {
+			continue
+		}
+		parent, getErr := a.projection.authorizedObject(ctx, tenantID, parentType.Key(), ref.UID)
+		if errors.Is(getErr, sql.ErrNoRows) {
+			continue
+		}
+		if getErr != nil {
+			return nil, nil, nil, getErr
+		}
+		if validOwnershipScope(parentType, parent.Namespace, childType, child.Namespace) {
+			result = append(result, parent)
+			controllers[parent.UID] = controllers[parent.UID] || ref.Controller != nil && *ref.Controller
+		}
+	}
+	return result, controllers, nil, nil
+}
+
+func (a ownerReferenceAdapter) children(ctx context.Context, tenantID string, parentType *Type, parent projectedObject, childType *Type, _ *config.RelationshipConfig) ([]projectedObject, map[string]bool, *RelationshipProblem, error) {
+	children, controllers, err := a.projection.authorizedOwnerReferenceChildren(ctx, tenantID, childType.Key(), apiVersion(parentType), parentType.Kind, parent.UID)
+	return children, controllers, nil, err
+}
+
+type fieldReferenceAdapter struct{ projection *Projection }
+
+func (a fieldReferenceAdapter) parents(ctx context.Context, tenantID string, parentType, childType *Type, child projectedObject, rule *config.RelationshipConfig) ([]projectedObject, map[string]bool, *RelationshipProblem, error) {
+	ref, state := extractFieldReference(child.Contents, rule.FieldReference.Path)
+	if state == referenceMissing {
+		return nil, nil, nil, nil
+	}
+	if state == referenceMalformed || !fieldReferenceTypeMatches(&ref, parentType) {
+		problem := malformedReferenceProblem(rule)
+		return nil, nil, &problem, nil
+	}
+	if (parentType.Scope == ScopeNamespaced && ref.Namespace == "") || (parentType.Scope == ScopeCluster && ref.Namespace != "") {
+		problem := malformedReferenceProblem(rule)
+		return nil, nil, &problem, nil
+	}
+	parent, err := a.projection.authorizedObject(ctx, tenantID, parentType.Key(), ref.UID)
+	if errors.Is(err, sql.ErrNoRows) {
+		namespace := ""
+		if parentType.Scope == ScopeNamespaced {
+			namespace = ref.Namespace
+		}
+		_, nameErr := a.projection.authorizedObjectByName(ctx, tenantID, parentType.Key(), namespace, ref.Name)
+		if nameErr == nil {
+			problem := malformedReferenceProblem(rule)
+			return nil, nil, &problem, nil
+		}
+		if errors.Is(nameErr, sql.ErrNoRows) {
+			return nil, nil, nil, nil
+		}
+		return nil, nil, nil, nameErr
+	}
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if parent.Name != ref.Name || !validFieldReferenceScope(&ref, parentType, parent, childType, child) {
+		problem := malformedReferenceProblem(rule)
+		return nil, nil, &problem, nil
+	}
+	return []projectedObject{parent}, nil, nil, nil
+}
+
+func (a fieldReferenceAdapter) children(ctx context.Context, tenantID string, parentType *Type, parent projectedObject, childType *Type, rule *config.RelationshipConfig) ([]projectedObject, map[string]bool, *RelationshipProblem, error) {
+	if childType.Scope == ScopeCluster && parentType.Scope == ScopeNamespaced {
+		return nil, nil, nil, nil
+	}
+	ref := fieldReference{APIVersion: apiVersion(parentType), Kind: parentType.Kind, Name: parent.Name, UID: parent.UID}
+	namespace := ""
+	if parentType.Scope == ScopeNamespaced {
+		ref.Namespace = parent.Namespace
+		namespace = parent.Namespace
+	}
+	children, malformed, err := a.projection.authorizedFieldReferenceChildren(ctx, tenantID, childType.Key(), namespace, rule.FieldReference.Path, &ref)
+	if malformed {
+		problem := malformedReferenceProblem(rule)
+		return children, nil, &problem, err
+	}
+	return children, nil, nil, err
+}
+
+type referenceState uint8
+
+const (
+	referenceMissing referenceState = iota
+	referenceValid
+	referenceMalformed
+)
+
+func extractFieldReference(contents []byte, path string) (fieldReference, referenceState) {
+	var value any
+	if json.Unmarshal(contents, &value) != nil {
+		return fieldReference{}, referenceMalformed
+	}
+	current := value
+	for _, field := range strings.Split(strings.TrimPrefix(path, "$."), ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return fieldReference{}, referenceMalformed
+		}
+		current, ok = object[field]
+		if !ok {
+			return fieldReference{}, referenceMissing
+		}
+	}
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		return fieldReference{}, referenceMalformed
+	}
+	var ref fieldReference
+	if json.Unmarshal(encoded, &ref) != nil || ref.APIVersion == "" || ref.Kind == "" || ref.Name == "" || ref.UID == "" {
+		return fieldReference{}, referenceMalformed
+	}
+	return ref, referenceValid
+}
+
+func fieldReferenceTypeMatches(ref *fieldReference, parentType *Type) bool {
+	return ref.APIVersion == apiVersion(parentType) && ref.Kind == parentType.Kind
+}
+
+func validFieldReferenceScope(ref *fieldReference, parentType *Type, parent projectedObject, childType *Type, child projectedObject) bool {
+	if !validOwnershipScope(parentType, parent.Namespace, childType, child.Namespace) {
+		return false
+	}
+	if parentType.Scope == ScopeNamespaced {
+		return ref.Namespace != "" && ref.Namespace == parent.Namespace
+	}
+	return ref.Namespace == ""
+}
+
+func apiVersion(resourceType *Type) string {
+	if resourceType.Group == "" {
+		return resourceType.Version
+	}
+	return resourceType.Group + "/" + resourceType.Version
+}
+
+func malformedReferenceProblem(rule *config.RelationshipConfig) RelationshipProblem {
+	return RelationshipProblem{Parent: rule.Parent, Child: rule.Child, Resolver: rule.Resolver, Reason: "a present field reference is malformed or does not identify the configured parent"}
 }
 
 func (r *CompositeRelationshipResolver) labelJoinChildren(ctx context.Context, tenantID string, parentType *Type, center projectedObject, childType *Type, mappings []config.LabelJoinMapping) ([]projectedObject, bool, error) {
@@ -380,14 +541,6 @@ func decodeOwnerReferences(contents []byte) ([]ownerReference, error) {
 		return nil, fmt.Errorf("decode owner references: %w", err)
 	}
 	return object.Metadata.OwnerReferences, nil
-}
-
-func mustOwnerReferences(contents []byte) []ownerReference {
-	refs, err := decodeOwnerReferences(contents)
-	if err != nil {
-		return nil
-	}
-	return refs
 }
 
 func relationshipNode(resourceType *Type, object projectedObject, controller bool) RelationshipNode {

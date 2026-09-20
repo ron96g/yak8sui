@@ -95,13 +95,15 @@ resource names expand or collapse that resource's branch, and indentation makes
 nesting explicit without a separate depth column. Switching views preserves
 loaded and collapsed branches and does not load additional neighborhoods; on
 narrow screens the table scrolls within the ownership view.
-The demo has six resources across four levels and mixes UID-stable owner
-references with a logical composite-label branch:
+The demo has six resources across four levels and runs all three resolvers:
+UID-stable owner references, a logical composite-label branch, and a structured
+field reference from `platform-api` to `platform-guardrails`:
 
 ```text
 ClusterPolicy platform-guardrails
   owns ConfigMap platform-settings
     owns Widget platform-api
+      also owned by ClusterPolicy platform-guardrails (fieldReference)
       owns ConfigMap platform-runtime
       owns ConfigMap platform-routes
     owns ConfigMap platform-feature-flags (labelJoin)
@@ -110,8 +112,8 @@ ClusterPolicy platform-guardrails
 Click **Show owners** on `platform-settings` to reveal `platform-guardrails`.
 Use **Expand entire hierarchy** to load all accessible ancestors and descendants
 automatically, or **Collapse branches** to return to the immediate neighborhood.
-Preview `platform-settings`, then **Show owned resources** on `platform-api` to
-expand the descendant branch. Preview opens live read-only YAML beside the hierarchy
+Select the `platform-settings` table row, then **Show owned resources** on
+`platform-api` to expand the descendant branch. Selecting a row opens live read-only YAML beside the hierarchy
 without changing its center or loaded branches; **Explore from this resource**
 deliberately recenters when desired. Owner-reference edges are verified by UID;
 the `platform-feature-flags` edge requires two configured label pairs to be present
@@ -127,6 +129,13 @@ This demo-only control removes or restores one required label on
 
 ```sh
 curl -X POST http://127.0.0.1:19080/demo/simulate/label-join-update
+```
+
+This demo-only control removes or restores `platform-api`'s structured policy
+reference live:
+
+```sh
+curl -X POST http://127.0.0.1:19080/demo/simulate/field-reference-update
 ```
 
 Ownership is not an access grant: every displayed node must independently match
@@ -206,7 +215,15 @@ equal, keys may differ, and each child may match at most one authorized current
 parent. Multiple matches produce no arbitrary edge and make the branch incomplete.
 Projected string labels are maintained transactionally in an indexed SQLite table;
 label joins are resolved by scoped SQL queries rather than by scanning and decoding
-all resources in application memory.
+all resources in application memory. A `fieldReference` resolver accepts exactly
+one field-only path below `$.spec` or `$.status`. The selected object must contain
+the configured parent's exact `apiVersion`, `kind`, `name`, and `uid`, plus
+`namespace` for namespaced parents. Missing fields mean no relationship; malformed
+or mismatched present references make the direction incomplete. Field references
+are queried with parameterized SQLite JSON traversal after indexed tenant/type
+scoping and are not separately persisted or indexed. Arrays and arbitrary JSONPath
+expressions are not supported. All Kubernetes owner references (controller and
+non-controller) are transactionally normalized and indexed for downward traversal.
 
 ### Verify
 

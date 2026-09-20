@@ -56,6 +56,16 @@ func (d staticDiscovery) ServerGroupsAndResources() ([]*metav1.APIGroup, []*meta
 }
 
 func newEnvironment(t *testing.T, ttl time.Duration) environment {
+	return newEnvironmentWithFieldPath(t, ttl, "$.spec.policyRef")
+}
+
+func newEnvironmentWithFieldPath(t *testing.T, ttl time.Duration, fieldPath string) environment {
+	return newEnvironmentConfigured(t, ttl, func(cfg *config.Config) {
+		cfg.Observation.Relationships[2].FieldReference.Path = fieldPath
+	})
+}
+
+func newEnvironmentConfigured(t *testing.T, ttl time.Duration, configure func(*config.Config)) environment {
 	t.Helper()
 	users := map[string]testidp.User{"allowed": {Subject: "1", Name: "Allowed User", Email: "allowed@example.test", Groups: []string{"platform-admins"}}, "denied": {Subject: "2", Name: "Denied User", Groups: []string{"unrelated"}}, "payments": {Subject: "3", Name: "Payments User", Groups: []string{"payments-viewers"}}}
 	provider, err := testidp.New("", users, "allowed")
@@ -71,7 +81,11 @@ func newEnvironment(t *testing.T, ttl time.Duration) environment {
 	}, Relationships: []config.RelationshipConfig{
 		{Parent: config.RelationshipType{Group: "", Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "widgets.example.test", Kind: "Widget"}},
 		{Parent: config.RelationshipType{Group: "policies.example.test", Kind: "ClusterPolicy"}, Child: config.RelationshipType{Group: "widgets.example.test", Kind: "Widget"}, Resolver: "labelJoin", LabelJoin: &config.LabelJoinConfig{Labels: []config.LabelJoinMapping{{ParentLabel: "owner", ChildLabel: "policy"}, {ParentLabel: "scope", ChildLabel: "policy-scope"}}}},
+		{Parent: config.RelationshipType{Group: "policies.example.test", Kind: "ClusterPolicy"}, Child: config.RelationshipType{Group: "", Kind: "ConfigMap"}, Resolver: "fieldReference", FieldReference: &config.FieldReferenceConfig{Path: "$.spec.policyRef"}},
 	}}, Tenants: []config.TenantConfig{{ID: "platform", Name: "Platform", Groups: []string{"platform-admins"}, LabelSelector: "tenant in (platform,shared)"}, {ID: "payments", Name: "Payments", Groups: []string{"payments-viewers", "platform-admins"}, LabelSelector: "tenant in (payments,shared)"}}}
+	if configure != nil {
+		configure(&cfg)
+	}
 	cfg.Identity.RedirectURL = "http://placeholder/auth/callback"
 	if validateErr := cfg.Validate(); validateErr != nil {
 		t.Fatal(validateErr)
@@ -109,6 +123,308 @@ func newEnvironment(t *testing.T, ttl time.Duration) environment {
 	t.Cleanup(app.Close)
 	t.Cleanup(idp.Close)
 	return environment{app: app, idp: idp, client: client, kube: kube, gvr: gvr, policyGVR: policyGVR, configMapGVR: configMapGVR, store: store, observation: observation}
+}
+
+func TestPublicHTTPFieldReferenceSupportsStatusPath(t *testing.T) {
+	env := newEnvironmentWithFieldPath(t, time.Hour, "$.status.policyRef")
+	env.login(t, "allowed")
+	parent := clusterPolicy("status-policy", "status-policy", "platform", true)
+	child := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"uid": "status-child", "name": "status-child", "namespace": "team-a", "labels": map[string]any{"tenant": "platform", "inspect": "true"}}, "status": map[string]any{"policyRef": map[string]any{"apiVersion": "policies.example.test/v1beta1", "kind": "ClusterPolicy", "name": "status-policy", "uid": "status-policy"}}}}
+	if _, err := env.kube.Resource(env.policyGVR).Create(t.Context(), parent, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Create(t.Context(), child, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/_core/v1/configmaps", "status-child")
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/policies.example.test/v1beta1/clusterpolicies", "status-policy")
+	response := get(t, env.client, env.app.URL+"/api/v1/tenants/platform/relationships/_core/v1/configmaps/status-child")
+	var result resources.Neighborhood
+	decode(t, response, &result)
+	if response.StatusCode != http.StatusOK || len(result.Parents) != 1 || result.Parents[0].UID != "status-policy" {
+		t.Fatalf("status field-reference neighborhood = %#v", result)
+	}
+}
+
+func TestPublicHTTPFieldReferenceOwnershipIsExactAuthorizedAndLive(t *testing.T) {
+	env := newEnvironment(t, time.Hour)
+	env.login(t, "allowed")
+	parent := clusterPolicy("policy-uid", "guardrails", "platform", true)
+	hidden := clusterPolicy("hidden-uid", "hidden", "payments", true)
+	child := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"uid": "field-child", "name": "settings", "namespace": "team-a", "labels": map[string]any{"tenant": "platform", "inspect": "true"}}, "spec": map[string]any{"policyRef": map[string]any{"apiVersion": "policies.example.test/v1beta1", "kind": "ClusterPolicy", "name": "guardrails", "uid": "policy-uid"}}}}
+	for _, item := range []*unstructured.Unstructured{parent, hidden} {
+		if _, err := env.kube.Resource(env.policyGVR).Create(t.Context(), item, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Create(t.Context(), child, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/_core/v1/configmaps", "field-child")
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/policies.example.test/v1beta1/clusterpolicies", "policy-uid")
+	childURL := env.app.URL + "/api/v1/tenants/platform/relationships/_core/v1/configmaps/field-child"
+	parentURL := env.app.URL + "/api/v1/tenants/platform/relationships/policies.example.test/v1beta1/clusterpolicies/policy-uid"
+	assert := func(url string) resources.Neighborhood {
+		t.Helper()
+		response := get(t, env.client, url)
+		var result resources.Neighborhood
+		decode(t, response, &result)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("relationship status = %d: %#v", response.StatusCode, result)
+		}
+		return result
+	}
+	if result := assert(childURL); len(result.Parents) != 1 || result.Parents[0].UID != "policy-uid" {
+		t.Fatalf("field-reference parents = %#v", result)
+	}
+	if result := assert(parentURL); len(result.Children) != 1 || result.Children[0].UID != "field-child" {
+		t.Fatalf("field-reference children = %#v", result)
+	}
+
+	stream, err := env.client.Get(strings.Replace(childURL, "/relationships/", "/relationship-streams/", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	reader := bufio.NewReader(stream.Body)
+	if _, snapshot := readRelationshipEvent(t, reader); len(snapshot.Parents) != 1 {
+		t.Fatalf("initial field-reference stream = %#v", snapshot)
+	}
+	unstructured.SetNestedField(child.Object, map[string]any{"apiVersion": "policies.example.test/v1beta1", "kind": "ClusterPolicy", "name": "guardrails", "uid": "stale-uid"}, "spec", "policyRef")
+	if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Update(t.Context(), child, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, snapshot := readRelationshipEvent(t, reader); len(snapshot.Parents) != 0 {
+		t.Fatalf("stale UID rebound = %#v", snapshot)
+	}
+	unstructured.SetNestedField(child.Object, "not-an-object", "spec", "policyRef")
+	if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Update(t.Context(), child, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, snapshot := readRelationshipEvent(t, reader)
+	if snapshot.Upward.Complete || len(snapshot.Upward.Problems) != 1 || strings.Contains(snapshot.Upward.Problems[0].Reason, "guardrails") {
+		t.Fatalf("malformed diagnostic = %#v", snapshot)
+	}
+	unstructured.RemoveNestedField(child.Object, "spec", "policyRef")
+	if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Update(t.Context(), child, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, snapshot = readRelationshipEvent(t, reader)
+	if !snapshot.Upward.Complete || len(snapshot.Upward.Problems) != 0 || len(snapshot.Parents) != 0 {
+		t.Fatalf("missing reference was not authoritative absence = %#v", snapshot)
+	}
+}
+
+func TestPublicHTTPFieldReferenceRejectsIdentityMismatchesAndUnauthorizedParent(t *testing.T) {
+	env := newEnvironment(t, time.Hour)
+	env.login(t, "allowed")
+	parent := clusterPolicy("policy-uid", "guardrails", "platform", true)
+	hidden := clusterPolicy("hidden-uid", "hidden", "payments", true)
+	child := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"uid": "mismatch-child", "name": "mismatch-child", "namespace": "team-a", "labels": map[string]any{"tenant": "platform", "inspect": "true"}}}}
+	for _, item := range []*unstructured.Unstructured{parent, hidden} {
+		if _, err := env.kube.Resource(env.policyGVR).Create(t.Context(), item, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setRef := func(value map[string]any) {
+		t.Helper()
+		if err := unstructured.SetNestedField(child.Object, value, "spec", "policyRef"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Update(t.Context(), child, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := map[string]any{"apiVersion": "policies.example.test/v1beta1", "kind": "ClusterPolicy", "name": "guardrails", "uid": "policy-uid"}
+	if err := unstructured.SetNestedField(child.Object, base, "spec", "policyRef"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Create(t.Context(), child, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/_core/v1/configmaps", "mismatch-child")
+	waitForItemsAt(t, &env, policyPath(), "policy-uid")
+	relationshipURL := env.app.URL + "/api/v1/tenants/platform/relationships/_core/v1/configmaps/mismatch-child"
+	assertMalformed := func() {
+		t.Helper()
+		var last resources.Neighborhood
+		for range 100 {
+			decode(t, get(t, env.client, relationshipURL), &last)
+			if len(last.Parents) == 0 && !last.Upward.Complete && len(last.Upward.Problems) == 1 {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("mismatched field reference = %#v", last)
+	}
+	for name, changes := range map[string]map[string]any{
+		"group":   {"apiVersion": "other.example.test/v1beta1"},
+		"version": {"apiVersion": "policies.example.test/v1"},
+		"kind":    {"kind": "OtherPolicy"},
+		"name":    {"name": "wrong"},
+		"uid":     {"uid": "wrong"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := map[string]any{}
+			for key, item := range base {
+				value[key] = item
+			}
+			for key, item := range changes {
+				value[key] = item
+			}
+			setRef(value)
+			assertMalformed()
+		})
+	}
+	setRef(map[string]any{"apiVersion": "policies.example.test/v1beta1", "kind": "ClusterPolicy", "name": "hidden", "uid": "hidden-uid"})
+	var isolated resources.Neighborhood
+	for range 100 {
+		decode(t, get(t, env.client, relationshipURL), &isolated)
+		if len(isolated.Parents) == 0 && isolated.Upward.Complete && len(isolated.Upward.Problems) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("unauthorized parent leaked through completeness: %#v", isolated)
+}
+
+func TestPublicHTTPFieldReferenceRejectsNamespacedParentForClusterChild(t *testing.T) {
+	env := newEnvironmentConfigured(t, time.Hour, func(cfg *config.Config) {
+		cfg.Observation.Relationships[2] = config.RelationshipConfig{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "policies.example.test", Kind: "ClusterPolicy"}, Resolver: "fieldReference", FieldReference: &config.FieldReferenceConfig{Path: "$.spec.configRef"}}
+	})
+	env.login(t, "allowed")
+	parent := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"uid": "namespaced-parent", "name": "settings", "namespace": "team-a", "labels": map[string]any{"tenant": "platform", "inspect": "true"}}}}
+	child := clusterPolicy("cluster-child", "cluster-child", "platform", true)
+	if err := unstructured.SetNestedField(child.Object, map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "name": "settings", "uid": "namespaced-parent", "namespace": "team-a"}, "spec", "configRef"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Create(t.Context(), parent, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.kube.Resource(env.policyGVR).Create(t.Context(), child, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemsAt(t, &env, policyPath(), "cluster-child")
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/_core/v1/configmaps", "namespaced-parent")
+	response := get(t, env.client, env.app.URL+"/api/v1/tenants/platform/relationships/policies.example.test/v1beta1/clusterpolicies/cluster-child")
+	var result resources.Neighborhood
+	decode(t, response, &result)
+	if response.StatusCode != http.StatusOK || len(result.Parents) != 0 || result.Upward.Complete || len(result.Upward.Problems) != 1 {
+		t.Fatalf("cluster child accepted namespaced parent = %#v", result)
+	}
+}
+
+func TestPublicHTTPFieldReferenceDoesNotRebindRecreatedParent(t *testing.T) {
+	env := newEnvironment(t, time.Hour)
+	env.login(t, "allowed")
+	parent := clusterPolicy("old-policy", "guardrails", "platform", true)
+	child := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"uid": "recreate-child", "name": "recreate-child", "namespace": "team-a", "labels": map[string]any{"tenant": "platform", "inspect": "true"}}, "spec": map[string]any{"policyRef": map[string]any{"apiVersion": "policies.example.test/v1beta1", "kind": "ClusterPolicy", "name": "guardrails", "uid": "old-policy"}}}}
+	if _, err := env.kube.Resource(env.policyGVR).Create(t.Context(), parent, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Create(t.Context(), child, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/_core/v1/configmaps", "recreate-child")
+	waitForItemsAt(t, &env, policyPath(), "old-policy")
+	relationshipURL := env.app.URL + "/api/v1/tenants/platform/relationships/_core/v1/configmaps/recreate-child"
+	if err := env.kube.Resource(env.policyGVR).Delete(t.Context(), "guardrails", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := clusterPolicy("new-policy", "guardrails", "platform", true)
+	if _, err := env.kube.Resource(env.policyGVR).Create(t.Context(), replacement, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemsAt(t, &env, policyPath(), "new-policy")
+	var result resources.Neighborhood
+	decode(t, get(t, env.client, relationshipURL), &result)
+	if len(result.Parents) != 0 || result.Upward.Complete || len(result.Upward.Problems) != 1 {
+		t.Fatalf("stale reference rebound after recreation = %#v", result)
+	}
+}
+
+func TestPublicHTTPFieldReferenceCoreParentEnforcesNamespaceScope(t *testing.T) {
+	env := newEnvironmentConfigured(t, time.Hour, func(cfg *config.Config) {
+		cfg.Observation.Relationships[0] = config.RelationshipConfig{Parent: config.RelationshipType{Kind: "ConfigMap"}, Child: config.RelationshipType{Group: "widgets.example.test", Kind: "Widget"}, Resolver: "fieldReference", FieldReference: &config.FieldReferenceConfig{Path: "$.spec.configRef"}}
+	})
+	env.login(t, "allowed")
+	parent := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"uid": "core-parent", "name": "settings", "namespace": "team-a", "labels": map[string]any{"tenant": "platform", "inspect": "true"}}}}
+	child := widget("core-child", "core-child", "platform", "Ready", 1)
+	child.SetNamespace("team-a")
+	if err := unstructured.SetNestedField(child.Object, map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "name": "settings", "uid": "core-parent", "namespace": "team-a"}, "spec", "configRef"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Create(t.Context(), parent, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Create(t.Context(), child, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemsAt(t, &env, widgetPath("platform"), "core-child")
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/_core/v1/configmaps", "core-parent")
+	relationshipURL := env.app.URL + "/api/v1/tenants/platform/relationships/widgets.example.test/v1/widgets/core-child"
+	var result resources.Neighborhood
+	decode(t, get(t, env.client, relationshipURL), &result)
+	if len(result.Parents) != 1 || result.Parents[0].UID != "core-parent" {
+		t.Fatalf("core parent field reference = %#v", result)
+	}
+	if err := unstructured.SetNestedField(child.Object, map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "name": "missing", "uid": "missing"}, "spec", "configRef"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Update(t.Context(), child, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for range 100 {
+		decode(t, get(t, env.client, relationshipURL), &result)
+		if len(result.Parents) == 0 && !result.Upward.Complete {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if result.Upward.Complete || len(result.Upward.Problems) != 1 {
+		t.Fatalf("missing namespace was not malformed without a current parent: %#v", result)
+	}
+	if err := unstructured.SetNestedField(child.Object, map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "name": "settings", "uid": "core-parent", "namespace": "team-b"}, "spec", "configRef"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Update(t.Context(), child, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for range 100 {
+		decode(t, get(t, env.client, relationshipURL), &result)
+		if len(result.Parents) == 0 && !result.Upward.Complete {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("namespace mismatch remained resolved: %#v", result)
+}
+
+func TestPublicHTTPFieldReferenceUnavailableEndpointIsIncomplete(t *testing.T) {
+	env := newEnvironmentConfigured(t, time.Hour, func(cfg *config.Config) {
+		cfg.Observation.Relationships[2].Parent = config.RelationshipType{Group: "policies.example.test", Kind: "TemporarilyAbsent"}
+	})
+	env.login(t, "allowed")
+	child := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"uid": "unavailable-child", "name": "unavailable-child", "namespace": "team-a", "labels": map[string]any{"tenant": "platform", "inspect": "true"}}, "spec": map[string]any{"policyRef": map[string]any{"apiVersion": "policies.example.test/v1", "kind": "TemporarilyAbsent", "name": "missing", "uid": "missing"}}}}
+	if _, err := env.kube.Resource(env.configMapGVR).Namespace("team-a").Create(t.Context(), child, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemsAt(t, &env, "/api/v1/tenants/platform/resources/_core/v1/configmaps", "unavailable-child")
+	response := get(t, env.client, env.app.URL+"/api/v1/tenants/platform/relationships/_core/v1/configmaps/unavailable-child")
+	var result resources.Neighborhood
+	decode(t, response, &result)
+	if response.StatusCode != http.StatusOK || result.Upward.Complete || len(result.Upward.Scopes) != 1 || result.Upward.Scopes[0].Kind != "TemporarilyAbsent" {
+		t.Fatalf("unavailable endpoint completeness = %#v", result)
+	}
+	stream, err := env.client.Get(env.app.URL + "/api/v1/tenants/platform/relationship-streams/_core/v1/configmaps/unavailable-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	event, snapshot := readRelationshipEvent(t, bufio.NewReader(stream.Body))
+	if event != "snapshot" || snapshot.Upward.Complete || len(snapshot.Upward.Scopes) != 1 || snapshot.Upward.Scopes[0].Kind != "TemporarilyAbsent" {
+		t.Fatalf("unavailable endpoint stream event %q = %#v", event, snapshot)
+	}
 }
 
 func TestPublicHTTPOwnershipNeighborhoodIsUIDVerifiedTenantScopedAndLive(t *testing.T) {

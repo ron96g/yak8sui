@@ -46,6 +46,12 @@ observation:
             childLabel: "example.com/owner-name"
           - parentLabel: "app.kubernetes.io/instance"
             childLabel: "example.com/owner-instance"
+    - parent: { group: "example.com", kind: "ClusterPolicy" }
+      child: { group: "example.com", kind: "Widget" }
+      resolver: fieldReference
+      fieldReference:
+        # One object-valued field path under the child's spec or status; arrays are unsupported.
+        path: "$.spec.policyRef"
 tenants:
   - id: platform
     name: Platform

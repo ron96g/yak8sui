@@ -98,7 +98,7 @@ function OwnershipPresentation(
           display: 'grid',
           gridTemplateColumns: {
             xs: 'minmax(0, 1fr)',
-            lg: 'minmax(0, 1.15fr) minmax(340px, .85fr)',
+            lg: 'minmax(0, 1.5fr) minmax(360px, .75fr)',
           },
           gap: 2,
           minWidth: 0,
@@ -469,7 +469,7 @@ function OwnershipTable({
       <Table
         size="small"
         aria-label="Loaded ownership hierarchy"
-        sx={{ minWidth: 720 }}
+        sx={{ minWidth: 760 }}
       >
         <TableHead>
           <TableRow>
@@ -477,8 +477,6 @@ function OwnershipTable({
             <TableCell>Kind</TableCell>
             <TableCell>Namespace</TableCell>
             <TableCell>Health</TableCell>
-            <TableCell>Controller</TableCell>
-            <TableCell>Actions</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -525,13 +523,27 @@ function TableOccurrence({
           onInspect(node)
         }
       }}
-      sx={
-        direction === 'center'
-          ? {
-              '& > *': {
+      sx={{
+        cursor: 'pointer',
+        '& > *': {
+          transition: (theme) =>
+            theme.transitions.create('background-color', {
+              duration: theme.transitions.duration.shortest,
+            }),
+          ...(direction === 'center'
+            ? {
                 backgroundColor: 'action.selected',
                 borderBlockColor: 'primary.main',
-              },
+              }
+            : {}),
+        },
+        '&:focus-visible': {
+          outline: 2,
+          outlineColor: 'primary.main',
+          outlineOffset: -2,
+        },
+        ...(direction === 'center'
+          ? {
               '& > :first-of-type': {
                 borderLeft: 2,
                 borderLeftColor: 'primary.main',
@@ -541,8 +553,15 @@ function TableOccurrence({
                 borderRightColor: 'primary.main',
               },
             }
-          : undefined
-      }
+          : {}),
+        '&:hover > *': {
+          backgroundColor: 'action.hover',
+        },
+        '&:hover .ownership-resource-name': {
+          color: 'primary.main',
+          textDecoration: 'underline',
+        },
+      }}
     >
       <TableCell sx={{ pl: 1 + occurrence.depth * 3 }}>
         <Stack direction="row" alignItems="center" spacing={0.5}>
@@ -552,7 +571,10 @@ function TableOccurrence({
             <Box sx={{ width: 34, flex: '0 0 34px' }} />
           )}
           <Box minWidth={0}>
-            <Typography fontWeight={direction === 'center' ? 600 : 400}>
+            <Typography
+              className="ownership-resource-name"
+              fontWeight={direction === 'center' ? 600 : 400}
+            >
               {node.name}
             </Typography>
             <Typography
@@ -576,19 +598,6 @@ function TableOccurrence({
       </TableCell>
       <TableCell>{node.namespace || 'Cluster scoped'}</TableCell>
       <TableCell>{healthLabel(node)}</TableCell>
-      <TableCell>{occurrence.controller ? 'Controller' : '—'}</TableCell>
-      <TableCell>
-        <Button
-          size="small"
-          aria-label={`Preview ${node.name}`}
-          onClick={(event) => {
-            event.stopPropagation()
-            onInspect(node)
-          }}
-        >
-          Preview
-        </Button>
-      </TableCell>
     </TableRow>
   )
 }

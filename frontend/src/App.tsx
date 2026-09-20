@@ -686,7 +686,7 @@ export default function App() {
       <Dialog
         open={detailLoading || detail !== null}
         onClose={closeDetail}
-        maxWidth="lg"
+        maxWidth={detailTab === 2 ? 'xl' : 'lg'}
         fullWidth
         aria-labelledby="resource-detail-title"
       >

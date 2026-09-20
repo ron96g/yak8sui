@@ -32,10 +32,15 @@ type RelationshipType struct {
 }
 
 type RelationshipConfig struct {
-	Parent    RelationshipType `yaml:"parent" json:"parent"`
-	Child     RelationshipType `yaml:"child" json:"child"`
-	Resolver  string           `yaml:"resolver" json:"resolver"`
-	LabelJoin *LabelJoinConfig `yaml:"labelJoin,omitempty" json:"labelJoin,omitempty"`
+	Parent         RelationshipType      `yaml:"parent" json:"parent"`
+	Child          RelationshipType      `yaml:"child" json:"child"`
+	Resolver       string                `yaml:"resolver" json:"resolver"`
+	LabelJoin      *LabelJoinConfig      `yaml:"labelJoin,omitempty" json:"labelJoin,omitempty"`
+	FieldReference *FieldReferenceConfig `yaml:"fieldReference,omitempty" json:"fieldReference,omitempty"`
+}
+
+type FieldReferenceConfig struct {
+	Path string `yaml:"path" json:"path"`
 }
 
 type LabelJoinConfig struct {
@@ -175,10 +180,21 @@ func (c *Config) validateRelationships(seenGroups map[string]bool, problems *[]s
 			if relationship.LabelJoin != nil {
 				*problems = append(*problems, prefix+".labelJoin is only valid for resolver labelJoin")
 			}
+			if relationship.FieldReference != nil {
+				*problems = append(*problems, prefix+".fieldReference is only valid for resolver fieldReference")
+			}
 		case "labelJoin":
 			validateLabelJoin(prefix, relationship.LabelJoin, problems)
+			if relationship.FieldReference != nil {
+				*problems = append(*problems, prefix+".fieldReference is only valid for resolver fieldReference")
+			}
+		case "fieldReference":
+			validateFieldReference(prefix, relationship.FieldReference, problems)
+			if relationship.LabelJoin != nil {
+				*problems = append(*problems, prefix+".labelJoin is only valid for resolver labelJoin")
+			}
 		default:
-			*problems = append(*problems, prefix+".resolver must be ownerReferences or labelJoin")
+			*problems = append(*problems, prefix+".resolver must be ownerReferences, labelJoin, or fieldReference")
 		}
 		if !seenGroups[relationship.Parent.Group] {
 			*problems = append(*problems, prefix+".parent.group is not configured for observation")
@@ -192,6 +208,40 @@ func (c *Config) validateRelationships(seenGroups map[string]bool, problems *[]s
 		}
 		seenRelationships[key] = true
 	}
+}
+
+func validateFieldReference(prefix string, options *FieldReferenceConfig, problems *[]string) {
+	if options == nil || strings.TrimSpace(options.Path) == "" {
+		*problems = append(*problems, prefix+".fieldReference.path is required")
+		return
+	}
+	path := options.Path
+	if strings.TrimSpace(path) != path {
+		*problems = append(*problems, prefix+".fieldReference.path must not have surrounding whitespace")
+		return
+	}
+	if !strings.HasPrefix(path, "$.spec.") && !strings.HasPrefix(path, "$.status.") {
+		*problems = append(*problems, prefix+".fieldReference.path must select a child field under $.spec or $.status")
+		return
+	}
+	for _, segment := range strings.Split(path[2:], ".") {
+		if !isFieldReferenceSegment(segment) {
+			*problems = append(*problems, prefix+".fieldReference.path must contain field access only; arrays and wildcards are not supported")
+			return
+		}
+	}
+}
+
+func isFieldReferenceSegment(segment string) bool {
+	if segment == "" {
+		return false
+	}
+	for _, character := range segment {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateLabelJoin(prefix string, options *LabelJoinConfig, problems *[]string) {

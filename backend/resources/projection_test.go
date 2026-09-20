@@ -139,6 +139,117 @@ func TestProjectionMaintainsQueryableResourceLabels(t *testing.T) {
 	}
 }
 
+func TestProjectionMaintainsIndexedOwnerReferences(t *testing.T) {
+	store, err := Open(t.TempDir() + "/projection.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	const typeKey = "widgets.example.test/v1/widgets"
+	if syncErr := store.SetSynchronized(t.Context(), typeKey, true); syncErr != nil {
+		t.Fatal(syncErr)
+	}
+	contents := []byte(`{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"ConfigMap","uid":"parent-a","controller":true},{"apiVersion":"v1","kind":"ConfigMap","uid":"parent-b"}]}}`)
+	if replaceErr := store.Replace(t.Context(), typeKey, "child", "team-a", "child", "1", contents, []string{"platform"}); replaceErr != nil {
+		t.Fatal(replaceErr)
+	}
+	children, controllers, err := store.authorizedOwnerReferenceChildren(t.Context(), "platform", typeKey, "v1", "ConfigMap", "parent-b")
+	if err != nil || len(children) != 1 || children[0].UID != "child" || controllers["child"] {
+		t.Fatalf("non-controller lookup = %#v %#v %v", children, controllers, err)
+	}
+	children, controllers, err = store.authorizedOwnerReferenceChildren(t.Context(), "platform", typeKey, "v1", "ConfigMap", "parent-a")
+	if err != nil || len(children) != 1 || !controllers["child"] {
+		t.Fatalf("controller lookup among multiple references = %#v %#v %v", children, controllers, err)
+	}
+	children, _, err = store.authorizedOwnerReferenceChildren(t.Context(), "payments", typeKey, "v1", "ConfigMap", "parent-a")
+	if err != nil || len(children) != 0 {
+		t.Fatalf("tenant-excluded owner reference lookup = %#v %v", children, err)
+	}
+	contents = []byte(`{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"ConfigMap","uid":"parent-c","controller":true}]}}`)
+	if replaceErr := store.Replace(t.Context(), typeKey, "child", "team-a", "child", "2", contents, []string{"platform"}); replaceErr != nil {
+		t.Fatal(replaceErr)
+	}
+	children, _, err = store.authorizedOwnerReferenceChildren(t.Context(), "platform", typeKey, "v1", "ConfigMap", "parent-b")
+	if err != nil || len(children) != 0 {
+		t.Fatalf("stale owner reference remained queryable: %#v %v", children, err)
+	}
+	if deleteErr := store.Delete(t.Context(), typeKey, "child"); deleteErr != nil {
+		t.Fatal(deleteErr)
+	}
+	children, _, err = store.authorizedOwnerReferenceChildren(t.Context(), "platform", typeKey, "v1", "ConfigMap", "parent-c")
+	if err != nil || len(children) != 0 {
+		t.Fatalf("deleted child's owner reference remained queryable: %#v %v", children, err)
+	}
+}
+
+func TestOwnerReferenceLookupUsesIndexes(t *testing.T) {
+	store, err := Open(t.TempDir() + "/projection.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	rows, err := store.db.QueryContext(t.Context(), `EXPLAIN QUERY PLAN SELECT r.uid FROM resource_owner_references AS o INDEXED BY resource_owner_reference_lookup
+CROSS JOIN resource_tenants AS m INDEXED BY resource_tenant_scope CROSS JOIN resources AS r INDEXED BY sqlite_autoindex_resources_1
+WHERE o.child_type_key=? AND o.parent_api_version=? AND o.parent_kind=? AND o.parent_uid=? AND m.tenant_id=? AND m.type_key=o.child_type_key AND m.uid=o.child_uid AND r.type_key=o.child_type_key AND r.uid=o.child_uid`, "widgets.example.test/v1/widgets", "v1", "ConfigMap", "parent", "platform")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	plan := ""
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan += detail + "\n"
+	}
+	for _, index := range []string{"resource_owner_reference_lookup", "resource_tenant_scope", "sqlite_autoindex_resources_1"} {
+		if !strings.Contains(plan, index) {
+			t.Fatalf("owner reference query plan did not use %s:\n%s", index, plan)
+		}
+	}
+}
+
+func TestFieldReferenceLookupDistinguishesAbsenceFromMalformedAndMismatchedValues(t *testing.T) {
+	store, err := Open(t.TempDir() + "/projection.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	const typeKey = "widgets.example.test/v1/widgets"
+	if syncErr := store.SetSynchronized(t.Context(), typeKey, true); syncErr != nil {
+		t.Fatal(syncErr)
+	}
+	ref := fieldReference{APIVersion: "v1", Kind: "ConfigMap", Name: "parent", UID: "parent-uid", Namespace: "team-a"}
+	tests := []struct {
+		name      string
+		contents  string
+		matched   int
+		malformed bool
+	}{
+		{name: "missing", contents: `{"spec":{}}`},
+		{name: "partial object", contents: `{"spec":{"owner":{"apiVersion":"v1"}}}`, malformed: true},
+		{name: "wrong name for uid", contents: `{"spec":{"owner":{"apiVersion":"v1","kind":"ConfigMap","name":"wrong","uid":"parent-uid","namespace":"team-a"}}}`, malformed: true},
+		{name: "stale uid for name", contents: `{"spec":{"owner":{"apiVersion":"v1","kind":"ConfigMap","name":"parent","uid":"stale","namespace":"team-a"}}}`, malformed: true},
+		{name: "wrong namespace for uid", contents: `{"spec":{"owner":{"apiVersion":"v1","kind":"ConfigMap","name":"parent","uid":"parent-uid","namespace":"team-b"}}}`, malformed: true},
+		{name: "wrong uid and namespace for name", contents: `{"spec":{"owner":{"apiVersion":"v1","kind":"ConfigMap","name":"parent","uid":"stale","namespace":"team-b"}}}`, malformed: true},
+		{name: "different parent", contents: `{"spec":{"owner":{"apiVersion":"v1","kind":"ConfigMap","name":"other","uid":"other-uid","namespace":"team-a"}}}`},
+		{name: "exact", contents: `{"spec":{"owner":{"apiVersion":"v1","kind":"ConfigMap","name":"parent","uid":"parent-uid","namespace":"team-a"}}}`, matched: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if replaceErr := store.Replace(t.Context(), typeKey, "child", "team-a", "child", "1", []byte(test.contents), []string{"platform"}); replaceErr != nil {
+				t.Fatal(replaceErr)
+			}
+			children, malformed, lookupErr := store.authorizedFieldReferenceChildren(t.Context(), "platform", typeKey, "team-a", "$.spec.owner", &ref)
+			if lookupErr != nil || len(children) != test.matched || malformed != test.malformed {
+				t.Fatalf("lookup = %d children, malformed=%t, err=%v", len(children), malformed, lookupErr)
+			}
+		})
+	}
+}
+
 func TestOpenBackfillsLabelsFromExistingProjectionOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "projection.db")
 	legacy, err := sql.Open("sqlite", path)
@@ -176,6 +287,105 @@ INSERT INTO resource_tenants VALUES('policies.example.test/v1/policies','parent'
 		t.Fatalf("idempotent reopen: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+}
+
+func TestOpenBackfillsOwnerReferencesFromExistingProjection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projection.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`CREATE TABLE resources (type_key TEXT NOT NULL, uid TEXT NOT NULL, namespace TEXT NOT NULL, name TEXT NOT NULL, resource_version TEXT NOT NULL, contents BLOB NOT NULL, PRIMARY KEY(type_key,uid));
+CREATE TABLE resource_tenants (type_key TEXT NOT NULL, uid TEXT NOT NULL, tenant_id TEXT NOT NULL, PRIMARY KEY(type_key,uid,tenant_id));
+CREATE TABLE observation_scopes (type_key TEXT PRIMARY KEY, synchronized INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'resynchronizing', reason TEXT NOT NULL DEFAULT '');
+INSERT INTO resources VALUES('widgets.example.test/v1/widgets','child','team-a','child','1','{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"ConfigMap","uid":"parent"},{"apiVersion":"v1","kind":"Secret","uid":"other","controller":true}]}}');
+INSERT INTO resource_tenants VALUES('widgets.example.test/v1/widgets','child','platform');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = legacy.Close()
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	const typeKey = "widgets.example.test/v1/widgets"
+	if syncErr := store.SetSynchronized(t.Context(), typeKey, true); syncErr != nil {
+		t.Fatal(syncErr)
+	}
+	children, controllers, err := store.authorizedOwnerReferenceChildren(t.Context(), "platform", typeKey, "v1", "ConfigMap", "parent")
+	if err != nil || len(children) != 1 || controllers["child"] {
+		t.Fatalf("backfilled references = %#v %#v %v", children, controllers, err)
+	}
+}
+
+func BenchmarkFieldReferenceLookup10K(b *testing.B) {
+	for _, target := range []struct {
+		name, uid string
+	}{
+		{name: "no-match", uid: "absent"},
+		{name: "one-match", uid: "parent-05000"},
+		{name: "many-match", uid: "shared"},
+	} {
+		b.Run(target.name, func(b *testing.B) {
+			store := benchmarkFieldReferenceStore(b)
+			ref := fieldReference{APIVersion: "v1", Kind: "ConfigMap", Name: target.uid, UID: target.uid, Namespace: "team-a"}
+			b.ResetTimer()
+			for b.Loop() {
+				if _, _, err := store.authorizedFieldReferenceChildren(b.Context(), "platform", "widgets.example.test/v1/widgets", "team-a", "$.spec.owner", &ref); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkFieldReferenceLookup10KConcurrent(b *testing.B) {
+	store := benchmarkFieldReferenceStore(b)
+	ref := fieldReference{APIVersion: "v1", Kind: "ConfigMap", Name: "parent-05000", UID: "parent-05000", Namespace: "team-a"}
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, _, err := store.authorizedFieldReferenceChildren(b.Context(), "platform", "widgets.example.test/v1/widgets", "team-a", "$.spec.owner", &ref); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func benchmarkFieldReferenceStore(b *testing.B) *Projection {
+	b.Helper()
+	store, err := Open(b.TempDir() + "/projection.db")
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = store.Close() })
+	const typeKey = "widgets.example.test/v1/widgets"
+	if syncErr := store.SetSynchronized(b.Context(), typeKey, true); syncErr != nil {
+		b.Fatal(syncErr)
+	}
+	tx, err := store.db.BeginTx(b.Context(), nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := range 10_000 {
+		uid := fmt.Sprintf("parent-%05d", i)
+		if i%1000 == 0 {
+			uid = "shared"
+		}
+		contents := []byte(fmt.Sprintf(`{"spec":{"owner":{"apiVersion":"v1","kind":"ConfigMap","name":%q,"uid":%q,"namespace":"team-a"}}}`, uid, uid))
+		childUID := fmt.Sprintf("child-%05d", i)
+		if _, err = tx.ExecContext(b.Context(), `INSERT INTO resources(type_key,uid,namespace,name,resource_version,contents) VALUES(?,?,?,?,?,?)`, typeKey, childUID, "team-a", childUID, "1", contents); err != nil {
+			b.Fatal(err)
+		}
+		if _, err = tx.ExecContext(b.Context(), `INSERT INTO resource_tenants(type_key,uid,tenant_id) VALUES(?,?,?)`, typeKey, childUID, "platform"); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		b.Fatal(err)
+	}
+	return store
 }
 
 func BenchmarkLabelJoinLookup10K(b *testing.B) {
