@@ -58,6 +58,35 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsExplicitAllowAllIdentityWithoutOIDCOrTenantGroups(t *testing.T) {
+	cfg := config.Config{
+		Server:      config.ServerConfig{PublicURL: "http://127.0.0.1:8080", SessionTTLRaw: "1h"},
+		Identity:    config.IdentityConfig{Mode: "allowAll"},
+		Observation: config.ObservationConfig{DatabasePath: "resources.db", Groups: []config.ResourceGroupConfig{{Group: "example.test", Include: []string{"widgets"}}}},
+		Tenants:     []config.TenantConfig{{ID: "all", Name: "All resources", LabelSelector: "inspect=true"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid allow-all configuration: %v", err)
+	}
+}
+
+func TestValidateDefaultsToOIDCAndRejectsUnknownIdentityMode(t *testing.T) {
+	base := config.Config{
+		Server:      config.ServerConfig{PublicURL: "https://app.example.test", SessionTTLRaw: "1h"},
+		Observation: config.ObservationConfig{DatabasePath: "resources.db", Groups: []config.ResourceGroupConfig{{Group: "example.test", Include: []string{"widgets"}}}},
+		Tenants:     []config.TenantConfig{{ID: "one", Name: "One", Groups: []string{"one"}, LabelSelector: "tenant=one"}},
+	}
+	cfg := base
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "identity.issuerURL is required") {
+		t.Fatalf("default OIDC validation error = %v", err)
+	}
+	cfg = base
+	cfg.Identity.Mode = "anonymous"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "identity.mode must be oidc or allowAll") {
+		t.Fatalf("unknown identity mode error = %v", err)
+	}
+}
+
 func TestValidateRejectsContradictoryAndMalformedResourceRules(t *testing.T) {
 	cfg := config.Config{
 		Server:   config.ServerConfig{PublicURL: "https://app.example.test", SessionTTLRaw: "1h"},

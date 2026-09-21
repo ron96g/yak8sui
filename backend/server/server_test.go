@@ -709,6 +709,26 @@ func TestPublicHTTPResourceMutationsRejectUnauthorizedAndCrossOriginRequests(t *
 	}
 }
 
+func TestAllowAllModePermitsMutationWithoutRoleGroupsOrSessionCookie(t *testing.T) {
+	env := newEnvironmentConfigured(t, time.Hour, func(cfg *config.Config) {
+		cfg.Identity.Mode = "allowAll"
+		cfg.Tenants[0].SupervisorGroups = nil
+		cfg.Tenants[0].AdminGroups = nil
+	})
+	item := widget("allow-all-uid", "allow-all", "platform", "Ready", 1)
+	if _, err := env.kube.Resource(env.gvr).Namespace("team-a").Create(t.Context(), item, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForItems(t, &env, "platform", "allow-all-uid")
+	path := env.app.URL + widgetPath("platform") + "/allow-all-uid/trigger"
+	response := mutate(t, env.client, http.MethodPost, path, "", env.app.URL)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("trigger status %d: %s", response.StatusCode, body(response))
+	}
+	response.Body.Close()
+	waitForYAML(t, &env, "allow-all-uid", "triggered-by: Unauthenticated access")
+}
+
 func TestPublicHTTPSessionExposesTenantMutationActionsByRole(t *testing.T) {
 	for _, test := range []struct {
 		user string
@@ -1700,6 +1720,47 @@ func TestInvalidSessionIsUnauthenticated(t *testing.T) {
 	}
 	if response.StatusCode != 401 {
 		t.Fatalf("status %d", response.StatusCode)
+	}
+}
+
+func TestAllowAllModeProvidesEveryTenantAndActionWithoutSessionCookie(t *testing.T) {
+	cfg := config.Config{
+		Server:   config.ServerConfig{PublicURL: "http://127.0.0.1:8080", SessionTTLRaw: "1h", WebDirectory: t.TempDir()},
+		Identity: config.IdentityConfig{Mode: "allowAll"},
+		Tenants: []config.TenantConfig{
+			{ID: "platform", Name: "Platform", LabelSelector: "tenant=platform"},
+			{ID: "payments", Name: "Payments", LabelSelector: "tenant=payments"},
+		},
+		Observation: config.ObservationConfig{DatabasePath: "resources.db", Groups: []config.ResourceGroupConfig{{Group: "example.test", Include: []string{"widgets"}}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	app := httptest.NewServer(appserver.New(&cfg, nil, auth.NewSessions(cfg.Server.SessionTTL), nil, nil, nil).Handler())
+	t.Cleanup(app.Close)
+
+	response := get(t, app.Client(), app.URL+"/api/session")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("session status %d: %s", response.StatusCode, body(response))
+	}
+	var session struct {
+		AuthenticationMode string `json:"authenticationMode"`
+		ExpiresAt          string `json:"expiresAt"`
+		Tenants            []struct {
+			ID      string   `json:"id"`
+			Actions []string `json:"actions"`
+		} `json:"tenants"`
+	}
+	decode(t, response, &session)
+	if session.AuthenticationMode != "allowAll" || session.ExpiresAt != "" {
+		t.Fatalf("session = %#v", session)
+	}
+	if len(session.Tenants) != 2 || strings.Join(session.Tenants[0].Actions, ",") != "trigger,update,delete" {
+		t.Fatalf("tenants = %#v", session.Tenants)
+	}
+	response = get(t, app.Client(), app.URL+"/api/tenants/payments/context")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("tenant context status %d: %s", response.StatusCode, body(response))
 	}
 }
 

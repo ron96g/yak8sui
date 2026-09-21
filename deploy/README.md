@@ -27,8 +27,8 @@ docker build -t yak8sui:local .
 ## Configure your deployment
 
 Prerequisites: a Kubernetes cluster, a default StorageClass (or a storage-class
-patch), access to pull the GHCR image, and an OIDC client. The pod must reach the
-Kubernetes API and OIDC provider over the network.
+patch), access to pull the GHCR image, and normally an OIDC client. The pod must
+reach the Kubernetes API and, in OIDC mode, the identity provider over the network.
 
 Start from `deploy/kustomize/overlays/example`. For an initial evaluation, adjust
 its image tag and the base resource RBAC rules. For maintained environments,
@@ -43,6 +43,11 @@ the container paths for the frontend and SQLite. Omit kubeconfig to use the
 ServiceAccount's in-cluster credentials. The example declares
 `config/config.schema.json` for YAML language servers, providing completion and
 early structural validation; application startup validation remains authoritative.
+
+For a protected environment that intentionally has no identity provider, use
+only `identity.mode: allowAll` in the identity section. Every caller that can
+reach the service then receives every configured tenant and action, backed by the
+pod ServiceAccount's RBAC. Keep the Service unreachable from untrusted networks.
 
 The example observes selected `cert-manager.io` types only. They must exist in
 the target cluster; missing configured types appear unavailable. It installs
@@ -108,8 +113,8 @@ kubectl -n yak8sui logs deployment/yak8sui
 ```
 
 Startup/readiness/liveness use the HTTP listener's TCP port, not a resource's
-sync state or an authenticated URL. OIDC discovery must succeed before the
-listener starts; an unavailable resource type does not make healthy types
+sync state or an authenticated URL. In OIDC mode, discovery must succeed before
+the listener starts; an unavailable resource type does not make healthy types
 unusable. TCP probes verify listener availability, not full application health.
 
 The read-only root filesystem has writable mounts only for SQLite and temporary

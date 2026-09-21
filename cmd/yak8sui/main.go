@@ -38,9 +38,14 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	oidc, err := auth.NewOIDC(ctx, &cfg.Identity)
-	if err != nil {
-		return fmt.Errorf("startup failed: %w", err)
+	var oidc *auth.OIDC
+	if cfg.AllowAll() {
+		slog.Warn("authentication is disabled; every visitor has access to every configured tenant and action")
+	} else {
+		oidc, err = auth.NewOIDC(ctx, &cfg.Identity)
+		if err != nil {
+			return fmt.Errorf("startup failed: %w", err)
+		}
 	}
 	projection, err := resources.Open(cfg.Observation.DatabasePath)
 	if err != nil {

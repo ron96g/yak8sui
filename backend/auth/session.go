@@ -23,6 +23,10 @@ type Session struct {
 
 func (s *Session) Done() <-chan struct{} { return s.done }
 
+func NewUnboundedSession(identity Identity) *Session {
+	return &Session{Identity: identity, done: make(chan struct{})}
+}
+
 type Sessions struct {
 	mu      sync.Mutex
 	entries map[string]*Session

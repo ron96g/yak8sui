@@ -5,6 +5,9 @@ server:
   webDirectory: "frontend/dist"
   sessionTTL: "8h"
 identity:
+  # oidc is the secure default. For an explicitly unauthenticated deployment,
+  # replace this section with only: mode: allowAll
+  mode: oidc
   issuerURL: "https://identity.example.com"
   clientID: "yak8sui"
   clientSecret: "replace-from-a-secret"

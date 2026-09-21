@@ -41,6 +41,14 @@ func schemaBytes() ([]byte, error) {
 		AllowAdditionalProperties:  false,
 	}
 	schema := reflector.Reflect(config.Config{})
+	identity := schema.Definitions["IdentityConfig"]
+	identity.AllOf = []*jsonschema.Schema{{
+		If: &jsonschema.Schema{
+			Required: []string{"mode"},
+			Extras:   map[string]any{"properties": map[string]any{"mode": map[string]any{"const": "allowAll"}}},
+		},
+		Else: &jsonschema.Schema{Required: []string{"issuerURL", "clientID", "clientSecret", "redirectURL"}},
+	}}
 	var output bytes.Buffer
 	encoder := json.NewEncoder(&output)
 	encoder.SetIndent("", "  ")

@@ -6,6 +6,9 @@ server:
   sessionTTL: "8h"
   cookieSecure: true
 identity:
+  # WARNING: mode: allowAll disables authentication and grants every visitor
+  # every configured tenant action. Omit the OIDC fields only in that mode.
+  mode: oidc
   issuerURL: "https://identity.example.com"
   clientID: "yak8sui"
   clientSecret: "replace-in-local-secret-file"

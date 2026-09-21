@@ -192,7 +192,8 @@ omitted it uses in-cluster service-account credentials.
 
 ### Run
 
-Requirements: Go 1.24+, Node.js 22+, and an OIDC provider.
+Requirements: Go 1.24+, Node.js 22+, and either an OIDC provider or an explicitly
+configured unauthenticated mode.
 
 ```sh
 cd frontend && npm install && npm run build && cd ..
@@ -200,6 +201,20 @@ cp config/example.yaml config/local.yaml
 # Edit issuer/client/redirect settings and tenant mappings. Use HTTPS in deployment.
 go run ./cmd/yak8sui -config config/local.yaml
 ```
+
+To connect to the configured real cluster without an identity provider, replace
+the `identity` section with:
+
+```yaml
+identity:
+  mode: allowAll
+```
+
+`allowAll` grants every HTTP client every configured tenant and application
+action. Tenant and resource selectors still scope what is visible, and Kubernetes
+RBAC still controls what the configured kubeconfig or in-cluster ServiceAccount
+can read or mutate. Restrict network access to the service; this mode provides no
+user authentication. Omit `mode` (or set it to `oidc`) for the secure default.
 
 Configuration is restart-required. `cookieSecure` defaults to true for an HTTPS `publicURL`; local plain-HTTP development may explicitly set `cookieSecure: false`. Client secrets should be injected into the local/deployment file from a secret manager and must not be committed.
 

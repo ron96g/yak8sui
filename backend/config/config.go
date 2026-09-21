@@ -18,7 +18,7 @@ type Config struct {
 	Server      ServerConfig      `yaml:"server" jsonschema:"required" jsonschema_description:"HTTP server and browser-session settings."`
 	Identity    IdentityConfig    `yaml:"identity" jsonschema:"required" jsonschema_description:"OpenID Connect identity-provider settings."`
 	Observation ObservationConfig `yaml:"observation" jsonschema:"required" jsonschema_description:"Kubernetes discovery, observation, and relationship settings."`
-	Tenants     []TenantConfig    `yaml:"tenants" jsonschema:"required,minItems=1" jsonschema_description:"Tenant security boundaries. At least one access or role group is required per tenant."`
+	Tenants     []TenantConfig    `yaml:"tenants" jsonschema:"required,minItems=1" jsonschema_description:"Tenant security boundaries. At least one access or role group is required per tenant in OIDC mode."`
 }
 
 type ObservationConfig struct {
@@ -77,10 +77,11 @@ type ServerConfig struct {
 }
 
 type IdentityConfig struct {
-	IssuerURL    string `yaml:"issuerURL" jsonschema:"required,format=uri" jsonschema_description:"Absolute HTTP or HTTPS OpenID Connect issuer URL."`
-	ClientID     string `yaml:"clientID" jsonschema:"required,minLength=1"`
-	ClientSecret string `yaml:"clientSecret" jsonschema:"required,minLength=1" jsonschema_description:"OIDC client secret; inject through a secret manager."`
-	RedirectURL  string `yaml:"redirectURL" jsonschema:"required,format=uri" jsonschema_description:"OIDC callback URL using the publicURL origin and /auth/callback path."`
+	Mode         string `yaml:"mode" jsonschema:"enum=oidc,enum=allowAll,default=oidc" jsonschema_description:"Authentication mode. allowAll disables authentication and grants every visitor access to every configured tenant and action."`
+	IssuerURL    string `yaml:"issuerURL" jsonschema:"format=uri" jsonschema_description:"Absolute HTTP or HTTPS OpenID Connect issuer URL; required in oidc mode."`
+	ClientID     string `yaml:"clientID" jsonschema_description:"OIDC client identifier; required in oidc mode."`
+	ClientSecret string `yaml:"clientSecret" jsonschema_description:"OIDC client secret; required in oidc mode and injected through a secret manager."`
+	RedirectURL  string `yaml:"redirectURL" jsonschema:"format=uri" jsonschema_description:"OIDC callback URL using the publicURL origin and /auth/callback path; required in oidc mode."`
 	GroupsClaim  string `yaml:"groupsClaim" jsonschema:"default=groups,minLength=1" jsonschema_description:"OIDC claim containing identity-provider group names."`
 }
 
@@ -318,6 +319,19 @@ func (c *Config) validateServer(problems *[]string) *url.URL {
 }
 
 func (c *Config) validateIdentity(publicURL *url.URL, problems *[]string) {
+	if c.Identity.Mode == "" {
+		c.Identity.Mode = "oidc"
+	}
+	switch c.Identity.Mode {
+	case "allowAll":
+	case "oidc":
+		c.validateOIDC(publicURL, problems)
+	default:
+		*problems = append(*problems, "identity.mode must be oidc or allowAll")
+	}
+}
+
+func (c *Config) validateOIDC(publicURL *url.URL, problems *[]string) {
 	for field, value := range map[string]string{"identity.issuerURL": c.Identity.IssuerURL, "identity.clientID": c.Identity.ClientID, "identity.clientSecret": c.Identity.ClientSecret, "identity.redirectURL": c.Identity.RedirectURL} {
 		if strings.TrimSpace(value) == "" {
 			*problems = append(*problems, field+" is required")
@@ -363,7 +377,7 @@ func (c *Config) validateTenants(problems *[]string) {
 		if tenant.Name == "" {
 			*problems = append(*problems, prefix+".name is required")
 		}
-		if len(tenant.Groups)+len(tenant.SupervisorGroups)+len(tenant.AdminGroups) == 0 {
+		if !c.AllowAll() && len(tenant.Groups)+len(tenant.SupervisorGroups)+len(tenant.AdminGroups) == 0 {
 			*problems = append(*problems, prefix+" must contain at least one identity-provider group across groups, supervisorGroups, or adminGroups")
 		}
 		if tenant.LabelSelector == "" {
@@ -378,6 +392,8 @@ func absoluteHTTPURL(raw string) (*url.URL, bool) {
 	u, err := url.ParseRequestURI(raw)
 	return u, err == nil && u.Scheme != "" && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https")
 }
+
+func (c *Config) AllowAll() bool { return c.Identity.Mode == "allowAll" }
 
 func (c *Config) SecureCookie() bool {
 	if c.Server.CookieSecure != nil {

@@ -48,6 +48,7 @@ type Tenant = {
   actions: Array<'trigger' | 'update' | 'delete'>
 }
 type Session = {
+  authenticationMode: 'oidc' | 'allowAll'
   user: { name: string; email: string }
   expiresAt: string
   tenants: Tenant[]
@@ -207,7 +208,7 @@ export default function App() {
   }, [clearTenantData])
 
   useEffect(() => {
-    if (!session) return
+    if (!session || session.authenticationMode === 'allowAll') return
     const remaining = new Date(session.expiresAt).getTime() - Date.now()
     if (remaining <= 0) {
       clearTenantData()
@@ -814,22 +815,26 @@ export default function App() {
           >
             {session.user.name || session.user.email}
           </Typography>
-          <IconButton
-            aria-label="Log out"
-            color="inherit"
-            onClick={logout}
-            sx={{ display: { xs: 'inline-flex', sm: 'none' } }}
-          >
-            <LogoutIcon />
-          </IconButton>
-          <Button
-            color="inherit"
-            startIcon={<LogoutIcon />}
-            onClick={logout}
-            sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
-          >
-            Log out
-          </Button>
+          {session.authenticationMode === 'oidc' && (
+            <IconButton
+              aria-label="Log out"
+              color="inherit"
+              onClick={logout}
+              sx={{ display: { xs: 'inline-flex', sm: 'none' } }}
+            >
+              <LogoutIcon />
+            </IconButton>
+          )}
+          {session.authenticationMode === 'oidc' && (
+            <Button
+              color="inherit"
+              startIcon={<LogoutIcon />}
+              onClick={logout}
+              sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
+            >
+              Log out
+            </Button>
+          )}
         </Toolbar>
       </AppBar>
       {error && (

@@ -19,6 +19,9 @@ The tenant identifier explicitly carried by an application request and independe
 **Session**:
 A bounded browser sign-in established from a verified OIDC identity and represented by an opaque server-managed cookie.
 
+**Allow-all identity**:
+An explicitly configured unauthenticated process identity that gives every HTTP caller every configured tenant and application action. Tenant selectors still scope resources, and Kubernetes credentials and RBAC remain the final cluster-access boundary.
+
 **Ownership relationship**:
 A configured, directional permission to resolve a parent type and child type; it is not itself proof that two resources are related.
 

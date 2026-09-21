@@ -58,10 +58,14 @@ type Server struct {
 	catalog       *resources.Catalog
 	relationships resources.RelationshipResolver
 	mutator       *resources.Mutator
+	allowAll      *auth.Session
 }
 
 func New(cfg *config.Config, oidcClient oidcClient, sessions *auth.Sessions, projection *resources.Projection, catalog *resources.Catalog, mutator *resources.Mutator) *Server {
 	s := &Server{cfg: *cfg, oidc: oidcClient, sessions: sessions, mux: http.NewServeMux(), attempts: map[string]loginAttempt{}}
+	if cfg.AllowAll() {
+		s.allowAll = auth.NewUnboundedSession(auth.Identity{Subject: "allow-all", Name: "Unauthenticated access"})
+	}
 	s.resources = projection
 	s.catalog = catalog
 	s.mutator = mutator
@@ -570,7 +574,7 @@ func (s *Server) mutationTarget(w http.ResponseWriter, r *http.Request, tenant *
 		writeError(w, http.StatusInternalServerError, "session context unavailable")
 		return resources.Type{}, resources.MutationTarget{}, false
 	}
-	if !mutationAllowed(tenant, session.Identity.Groups, action) {
+	if !s.cfg.AllowAll() && !mutationAllowed(tenant, session.Identity.Groups, action) {
 		writeError(w, http.StatusForbidden, "resource mutation is not permitted for this tenant")
 		return resources.Type{}, resources.MutationTarget{}, false
 	}
@@ -667,6 +671,10 @@ func (s *Server) requestedType(r *http.Request) (resources.Type, bool) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AllowAll() {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
 	state, err := token()
 	if err != nil {
 		http.Error(w, "could not start sign-in", 500)
@@ -691,6 +699,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AllowAll() {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
 	if problem := r.URL.Query().Get("error"); problem != "" {
 		s.authFailure(w, r, "Identity provider rejected sign-in: "+problem)
 		return
@@ -734,6 +746,10 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "cross-origin logout rejected")
 		return
 	}
+	if s.cfg.AllowAll() {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
 		s.sessions.Revoke(cookie.Value)
 	}
@@ -774,6 +790,9 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) currentSession(r *http.Request) (*auth.Session, bool) {
+	if s.allowAll != nil {
+		return s.allowAll, true
+	}
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil {
 		return nil, false
@@ -806,7 +825,13 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"user": map[string]string{fieldName: session.Identity.Name, "email": session.Identity.Email}, "expiresAt": session.ExpiresAt, "tenants": s.publicTenants(s.authorizedTenants(session.Identity.Groups), session.Identity.Groups)})
+	expiresAt := any(session.ExpiresAt)
+	mode := "oidc"
+	if s.cfg.AllowAll() {
+		expiresAt = ""
+		mode = "allowAll"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"authenticationMode": mode, "user": map[string]string{fieldName: session.Identity.Name, "email": session.Identity.Email}, "expiresAt": expiresAt, "tenants": s.publicTenants(s.authorizedTenants(session.Identity.Groups), session.Identity.Groups)})
 }
 
 func (s *Server) tenantContext(w http.ResponseWriter, _ *http.Request, tenant *config.TenantConfig) {
@@ -820,6 +845,9 @@ func sessionFromContext(ctx context.Context) (*auth.Session, bool) {
 }
 
 func (s *Server) authorizedTenants(groups []string) []config.TenantConfig {
+	if s.cfg.AllowAll() {
+		return append([]config.TenantConfig(nil), s.cfg.Tenants...)
+	}
 	allowed := map[string]bool{}
 	for _, group := range groups {
 		allowed[group] = true
@@ -846,6 +874,11 @@ func (s *Server) publicTenants(tenants []config.TenantConfig, groups []string) [
 	result := make([]publicTenant, 0, len(tenants))
 	for _, tenant := range tenants {
 		actions := []string{}
+		if s.cfg.AllowAll() {
+			actions = []string{actionTrigger, actionUpdate, actionDelete}
+			result = append(result, publicTenant{ID: tenant.ID, Name: tenant.Name, Actions: actions})
+			continue
+		}
 		if mutationAllowed(&tenant, groups, actionTrigger) {
 			actions = append(actions, actionTrigger)
 		}

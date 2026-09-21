@@ -17,25 +17,55 @@
       ]
     },
     "IdentityConfig": {
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "allowAll"
+              }
+            }
+          },
+          "else": {
+            "required": [
+              "issuerURL",
+              "clientID",
+              "clientSecret",
+              "redirectURL"
+            ]
+          }
+        }
+      ],
       "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "oidc",
+            "allowAll"
+          ],
+          "description": "Authentication mode. allowAll disables authentication and grants every visitor access to every configured tenant and action.",
+          "default": "oidc"
+        },
         "issuerURL": {
           "type": "string",
           "format": "uri",
-          "description": "Absolute HTTP or HTTPS OpenID Connect issuer URL."
+          "description": "Absolute HTTP or HTTPS OpenID Connect issuer URL; required in oidc mode."
         },
         "clientID": {
           "type": "string",
-          "minLength": 1
+          "description": "OIDC client identifier; required in oidc mode."
         },
         "clientSecret": {
           "type": "string",
-          "minLength": 1,
-          "description": "OIDC client secret; inject through a secret manager."
+          "description": "OIDC client secret; required in oidc mode and injected through a secret manager."
         },
         "redirectURL": {
           "type": "string",
           "format": "uri",
-          "description": "OIDC callback URL using the publicURL origin and /auth/callback path."
+          "description": "OIDC callback URL using the publicURL origin and /auth/callback path; required in oidc mode."
         },
         "groupsClaim": {
           "type": "string",
@@ -45,13 +75,7 @@
         }
       },
       "additionalProperties": false,
-      "type": "object",
-      "required": [
-        "issuerURL",
-        "clientID",
-        "clientSecret",
-        "redirectURL"
-      ]
+      "type": "object"
     },
     "LabelJoinConfig": {
       "properties": {
@@ -327,7 +351,7 @@
       },
       "type": "array",
       "minItems": 1,
-      "description": "Tenant security boundaries. At least one access or role group is required per tenant."
+      "description": "Tenant security boundaries. At least one access or role group is required per tenant in OIDC mode."
     }
   },
   "additionalProperties": false,
